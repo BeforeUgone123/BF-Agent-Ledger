@@ -25,8 +25,8 @@ omarchy plugin disable omarchy.agents
 ```
 
 卸载：`omarchy plugin remove beforeugone.agents`。它写入的数据在
-`~/.local/state/omarchy/agents/` 下（`index/`、`history/`，以及
-`usage/devin.json`、`usage/kimi.json`），可以直接删除。
+`~/.local/state/omarchy/agents/` 下（`index/`、`history/`，以及 `usage/` 里带有
+`"source": "beforeugone.agents/index"` 的记录和 `usage/kimi.json`），可以直接删除。
 
 ## 页面内容
 
@@ -68,12 +68,28 @@ omarchy plugin disable omarchy.agents
 |---|---|---|
 | Claude Code | 会话和每周窗口，来自 Omarchy 的采集器 | `~/.claude/projects/**/*.jsonl` |
 | Codex | 会话和每周窗口，来自 Omarchy 的采集器 | `~/.codex/sessions/**/*.jsonl` |
+| OpenCode | — | `~/.local/share/opencode/opencode.db` |
+| Pi | — | `~/.pi/agent/sessions/**/*.jsonl`（以及 oh-my-pi 的 `~/.omp`） |
+| Hermes | — | `~/.hermes/state.db`，以及各 profile 的 |
+| Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
+| Grok | — | `~/.grok/sessions/**/usage.json` |
 | Devin | 无：Devin 没有用量接口 | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | 窗口和余额，来自 `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
 | Fireworks | 预付费余额，来自 Omarchy 的采集器 | —（只有每日总量） |
 
-某个 Agent 在这台机器上用过之后才会出现。其他有 Omarchy 用量采集器的 Agent
-也会显示限额和每日总量；模型、项目、时段和会话明细需要日志适配器（见英文说明）。
+某个 Agent 在这台机器上用过之后才会出现。OpenCode、Pi 和 Hermes 调用的是其他
+服务商的模型：它们的 token 记在实际使用的工具名下，模型名按工具记录的原样显示。
+
+**来自其他插件的限额。** 面板会显示 `~/.local/state/omarchy/agents/usage/`
+里的每一条用量记录，不管是谁写的。所以为 Omarchy 自带 Agents 面板写的采集器插件
+（Grok、Hermes、Gemini、Copilot、Cursor、Z.ai 等）在这里同样生效；本插件没有
+适配器的 Agent，也能通过这种方式显示限额和每日总量。
+
+**各适配器的验证程度。** Claude Code、Codex、Devin 和 Kimi Code 用真实日志逐项
+核对过。OpenCode、Pi、Hermes 和 Gemini CLI 依据各项目自己的源码或文档格式编写，
+并用按该格式构造的文件测试过，但还没有在真实安装上跑过。Grok 的 CLI 不开源，
+它的适配器参照了其他 Omarchy 插件的读取方式，数字请当作暂定。Hermes 和 Grok
+保存的是每个会话或每轮的总量而不是每次请求，所以它们的按小时明细只能精确到这个粒度。
 
 ## 读取什么、发送什么
 

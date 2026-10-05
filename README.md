@@ -26,7 +26,8 @@ omarchy plugin disable omarchy.agents
 ```
 
 Remove it with `omarchy plugin remove beforeugone.agents`. What it wrote is under
-`~/.local/state/omarchy/agents/` (`index/`, `history/`, and `usage/devin.json`,
+`~/.local/state/omarchy/agents/` (`index/`, `history/`, and the records in
+`usage/` that carry `"source": "beforeugone.agents/index"`, plus
 `usage/kimi.json`) and can be deleted.
 
 ## What it shows
@@ -77,13 +78,33 @@ refreshes, Esc closes. From a script:
 |---|---|---|
 | Claude Code | session and weekly windows, from Omarchy's collector | `~/.claude/projects/**/*.jsonl` |
 | Codex | session and weekly windows, from Omarchy's collector | `~/.codex/sessions/**/*.jsonl` |
+| OpenCode | — | `~/.local/share/opencode/opencode.db` |
+| Pi | — | `~/.pi/agent/sessions/**/*.jsonl` (and oh-my-pi's `~/.omp`) |
+| Hermes | — | `~/.hermes/state.db`, and each profile's |
+| Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
+| Grok | — | `~/.grok/sessions/**/usage.json` |
 | Devin | none: Devin has no usage API | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | windows and balance, from the collector in `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
 | Fireworks | prepaid balance, from Omarchy's collector | — (day totals only) |
 
-An agent appears once it has been used on this machine. Any other agent with an
-Omarchy usage collector shows its limits and day totals too; model, project,
-hour and session detail needs a log adapter (see below).
+An agent appears once it has been used on this machine. OpenCode, Pi and Hermes
+run other providers' models: their tokens are filed under the tool that spent
+them, with the model named as the tool logged it.
+
+**Limits from other plugins.** The panel shows every usage record in
+`~/.local/state/omarchy/agents/usage/`, whoever wrote it. So a collector plugin
+made for Omarchy's own Agents panel — for Grok, Hermes, Gemini, Copilot,
+Cursor, Z.ai and others — adds its limits here as well, and an agent this
+plugin has no adapter for still gets its limits and day totals that way.
+
+**How far each adapter has been checked.** Claude Code, Codex, Devin and Kimi
+Code were verified against real logs, total for total. OpenCode, Pi, Hermes and
+Gemini CLI follow each project's own source or documented format and are tested
+against files built to that format, but have not yet been run against a real
+installation. Grok's CLI is closed, so its adapter follows the readers in other
+Omarchy plugins; treat its numbers as provisional. Hermes and Grok keep totals
+per session or turn rather than per request, so their hour-by-hour detail is
+only as fine as that.
 
 ## What it reads and what it sends
 
@@ -170,11 +191,12 @@ text. The page draws from two sources:
 - **The index**, built by `bin/usage-index` (Python, standard library only)
   from the raw session logs. It reads only what is new into `usage.db`, then
   writes `cube.json`: hourly totals in local time by agent, model, project and
-  session. An agent with logs but no collector, like Devin, gets its usage
-  record from the index.
+  session. An agent with logs but no collector, like Devin or OpenCode, gets
+  its usage record from the index; a record another plugin wrote is left alone.
 
-Adding an agent's detail is adding an adapter class to `bin/usage-index`;
-adding its limits is adding a `bin/collect-<agent>` that prints a usage record.
+Adding an agent's detail is adding an adapter class to `bin/usage-index` — for
+a JSONL log, a rewritten JSON file or a SQLite store — and adding its limits
+is adding a `bin/collect-<agent>` that prints a usage record.
 Deleting the `index` directory is safe: the next refresh rebuilds it.
 
 Agents without an adapter keep their day totals in

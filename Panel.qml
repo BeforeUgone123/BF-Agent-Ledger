@@ -848,9 +848,10 @@ Panel {
   }
 
   // Stacked series are told apart by strength: the first agent is solid and
-  // each one after it steps back.
+  // each one after it steps back. Past five the steps shrink to fit them all.
   function shade(index) {
-    return alpha(foreground, [1, 0.6, 0.36, 0.22, 0.14][Math.min(index, 4)])
+    if (shown.length <= 5) return alpha(foreground, [1, 0.6, 0.36, 0.22, 0.14][Math.min(index, 4)])
+    return alpha(foreground, Math.pow(0.12, index / (shown.length - 1)))
   }
 
   function share(total, peak) { return peak > 0 ? total / peak : 0 }
@@ -1131,14 +1132,19 @@ Panel {
           }
 
           // ---------- Focus: everything, or one agent ----------
-          Row {
+          Grid {
             id: focusSwitch
             visible: root.providers.length > 1
             width: parent.width
             spacing: Style.spacing.sm
 
+            // A chip needs room for its name, so many agents wrap onto rows of
+            // equal length rather than squeezing into one.
+            readonly property int fits: Math.max(1, Math.floor((width + spacing) / (Style.space(72) + spacing)))
+            readonly property int rowCount: Math.max(1, Math.ceil(root.focusChoices.length / fits))
+            columns: Math.ceil(root.focusChoices.length / rowCount)
             // Whole pixels: a fractional width leaves the last chip's border between two.
-            readonly property real cellWidth: Math.floor((width - spacing * (root.focusChoices.length - 1)) / root.focusChoices.length)
+            readonly property real cellWidth: Math.floor((width - spacing * (columns - 1)) / columns)
 
             Repeater {
               model: root.focusChoices
@@ -1551,8 +1557,9 @@ Panel {
       }
 
       // Which strength is which agent; one series needs no key.
-      Row {
+      Flow {
         visible: root.shown.length > 1
+        width: parent.width
         spacing: Style.spacing.lg
 
         Repeater {
