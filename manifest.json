@@ -5,7 +5,7 @@
   "version": "4.2.0",
   "author": "BeforeUgone",
   "license": "MIT",
-  "homepage": "https://github.com/BeforeUgone123/omarchy-agent-ledger",
+  "homepage": "https://github.com/BeforeUgone123/BF-Agent-Ledger",
   "description": "AI coding usage on one page: limits, a year of activity, cost at list prices, and tokens by agent, model, project, hour and session for Claude Code, Codex, OpenCode, Pi, Hermes, Gemini CLI, Grok, Kigi, Devin, Kimi Code and Fireworks. English and Chinese.",
   "kinds": [
     "bar-widget"

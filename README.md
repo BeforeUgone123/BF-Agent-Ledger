@@ -12,7 +12,7 @@ and Chinese ([中文说明](README.zh-CN.md)).
 ## Install
 
 ```bash
-omarchy plugin add https://github.com/BeforeUgone123/omarchy-agent-ledger --enable
+omarchy plugin add https://github.com/BeforeUgone123/BF-Agent-Ledger --enable
 ```
 
 It needs `python3` and `jq`, which Omarchy already has. Nothing is installed

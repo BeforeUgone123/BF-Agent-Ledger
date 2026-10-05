@@ -12,7 +12,7 @@
 ## 安装
 
 ```bash
-omarchy plugin add https://github.com/BeforeUgone123/omarchy-agent-ledger --enable
+omarchy plugin add https://github.com/BeforeUgone123/BF-Agent-Ledger --enable
 ```
 
 依赖 `python3` 和 `jq`，Omarchy 自带。插件不会在自己的目录之外安装任何东西，
