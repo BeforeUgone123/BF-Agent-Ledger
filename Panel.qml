@@ -843,7 +843,8 @@ Panel {
     for (var i = 0; i < providers.length; i++)
       if (providers[i].providerId === row.agent) name = providers[i].providerName
     return name + " · " + projectName(row.project) + " · " + clock(row.start)
-      + "\n" + formatDuration(row.end - row.start) + " · " + tr("peak context %1").arg(tokens(row.peak))
+      // An agent that logs a turn's total rather than each request has no context size.
+      + "\n" + formatDuration(row.end - row.start) + (row.peak > 0 ? " · " + tr("peak context %1").arg(tokens(row.peak)) : "")
       + " · " + (row.priced ? money(row.cost) : row.cost > 0 ? money(row.cost) + "+" : tr("unpriced"))
   }
 

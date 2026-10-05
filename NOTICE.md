@@ -13,8 +13,10 @@ The log adapters in `bin/usage-index` were written for this plugin. Where an
 agent's format had to be learned, it was learned from that agent's own source
 or documentation — [OpenCode](https://github.com/anomalyco/opencode),
 [Pi](https://github.com/earendil-works/pi),
-[Hermes](https://github.com/NousResearch/hermes-agent) and
-[Gemini CLI](https://github.com/google-gemini/gemini-cli) — and from how other
+[Hermes](https://github.com/NousResearch/hermes-agent),
+[Gemini CLI](https://github.com/google-gemini/gemini-cli),
+[Grok Build](https://github.com/xai-org/grok-build) and
+[Kigi](https://github.com/BeforeUgone123/Kigi-CLI), a fork of it — and from how other
 MIT-licensed Omarchy plugins read the same files, with thanks to their authors:
 [omarchy-agent-collectors](https://github.com/rohaquinlop/omarchy-agent-collectors),
 [n0d3x.agents](https://github.com/n0d3xt-max/n0d3x.agents),
@@ -26,7 +28,8 @@ No code was copied from them.
 The marks in `assets/` identify the services whose usage is shown. They are
 trademarks of their owners — Anthropic, OpenAI, Cognition, Moonshot AI and
 Fireworks AI — and are not covered by this plugin's license. The Kimi mark is
-used under the license in `assets/kimi.LICENSE`.
+used under the license in `assets/kimi.LICENSE`; the Kigi mark is the Kigi
+project's own.
 
 Prices in `pricing.json` are copied from each provider's public price page,
 named in that file.

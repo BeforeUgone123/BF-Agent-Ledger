@@ -21,6 +21,7 @@ import sys
 import time
 from datetime import datetime
 from pathlib import Path
+from urllib.parse import unquote
 
 HOME = Path.home()
 PLUGIN = Path(__file__).resolve().parent.parent
@@ -96,9 +97,8 @@ class Index:
 # as `state` next time).
 #
 # Claude Code, Codex, Devin and Kimi Code were written against real logs.
-# OpenCode, Pi, Hermes and Gemini CLI follow each project's own source or
-# documented format; Grok's CLI is closed, so its adapter follows the readers
-# in other Omarchy plugins. See NOTICE.md.
+# OpenCode, Pi, Hermes, Gemini CLI, Grok and Kigi follow each project's own
+# source or documented format. See NOTICE.md.
 
 
 class Claude:
@@ -511,8 +511,7 @@ class Hermes:
       index.event(
         f"hermes:{key}:{sum(counts[:4])}", "hermes", int(float(when) * 1000), str(sid),
         str((sessions.get(sid) or ("",))[0] or "unknown"), str(model or "hermes"), input=fresh,
-        output=output - reasoning, reasoning=reasoning, cache_read=cache_read, cache_write=cache_write,
-        context=fresh + cache_read + cache_write)
+        output=output - reasoning, reasoning=reasoning, cache_read=cache_read, cache_write=cache_write)
     return {"totals": totals}
 
 
@@ -598,67 +597,127 @@ class Gemini:
       index.title("gemini", session, title)
 
 
-class Grok:
-  id = "grok"
-  record = {"name": "Grok"}
+class Build:
+  """Grok Build's session folders, which Kigi, a fork of it, keeps as well.
 
-  def home(self):
-    return Path(os.environ.get("GROK_HOME") or HOME / ".grok")
+  sessions/<working directory, percent-encoded>/<session>/ holds summary.json
+  (where it ran, its title, what kind of session it is) and the turn log
+  updates.jsonl; newer builds also write usage.json, the tokens each turn
+  spent per model. A turn's figure already includes its subagents, so a
+  subagent's own session is skipped. inputTokens is the whole prompt: cache
+  reads and cache writes are parts of it, and reasoning is part of output.
+  A turn is one event per model, so there is no single context size to report.
+  """
 
-  # sessions/**/<session>/usage.json holds the session's turns, each with the
-  # tokens it spent per model; summary.json beside it says where it ran and
-  # whether it is a subagent, whose tokens its parent's file already counts.
+  def __init__(self, id, name, home):
+    self.id = id
+    self.record = {"name": name}
+    self.home = home
+
+  def root(self):
+    return Path(self.home()) / "sessions"
+
+  def summary(self, folder):
+    try:
+      summary = json.loads((Path(folder) / "summary.json").read_text())
+    except (OSError, ValueError):
+      return {}
+    return summary if isinstance(summary, dict) else {}
+
+  def place(self, index, folder, session):
+    """(working directory, fallback model), or None for a session not to count."""
+    summary = self.summary(folder)
+    if str(summary.get("session_kind") or "").lower().startswith("subagent"):
+      return None
+    title = summary.get("generated_title") or summary.get("session_summary")
+    if title:
+      index.title(self.id, session, " ".join(str(title).split()))
+    info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
+    return str(info.get("cwd") or unquote(Path(folder).parent.name) or "unknown"), str(summary.get("current_model_id") or self.id)
+
+  def spend(self, index, key, ts, session, cwd, fallback, usage):
+    nested = usage.get("modelUsage")
+    rows = nested.items() if isinstance(nested, dict) and nested else [(usage.get("primaryModelId") or fallback, usage)]
+    for model, b in rows:
+      if not isinstance(b, dict):
+        continue
+      prompt = int(b.get("inputTokens") or 0)
+      cache_read = min(prompt, int(b.get("cachedReadTokens") or 0))
+      cache_write = min(prompt - cache_read, int(b.get("cacheCreationTokens") or 0))
+      output = int(b.get("outputTokens") or 0)
+      reasoning = min(output, int(b.get("reasoningTokens") or 0))
+      if prompt + output <= 0:
+        continue
+      index.event(
+        f"{self.id}:{session}:{key}:{model}", self.id, ts, session, cwd, str(model),
+        input=prompt - cache_read - cache_write, output=output - reasoning, reasoning=reasoning,
+        cache_read=cache_read, cache_write=cache_write, replace=True)
+
+
+class BuildUsage(Build):
+  # usage.json: { sessionId, updatedAt, session: totals, turns: [{ turnNumber, endedAt, …totals }] }
   def files(self):
-    return sorted(glob.glob(str(self.home() / "sessions" / "**" / "usage.json"), recursive=True))
-
-  def models(self, blob):
-    nested = blob.get("modelUsage")
-    if isinstance(nested, dict) and nested:
-      return [(str(name), bucket) for name, bucket in nested.items() if isinstance(bucket, dict)]
-    return [(str(blob.get("primaryModelId") or blob.get("model") or "grok"), blob)]
+    return sorted(glob.glob(str(self.root() / "**" / "usage.json"), recursive=True))
 
   def document(self, index, text, path):
     usage = json.loads(text)
     if not isinstance(usage, dict):
       return
-    try:
-      summary = json.loads(Path(path).with_name("summary.json").read_text())
-    except (OSError, ValueError):
-      summary = {}
-    info = summary.get("info") if isinstance(summary.get("info"), dict) else {}
-    kind = next((str(v) for v in (summary.get("sessionKind"), summary.get("kind"), info.get("sessionKind"), info.get("kind")) if v), "")
-    if kind.lower().startswith("subagent"):
+    folder = Path(path).parent
+    session = str(usage.get("sessionId") or folder.name)
+    where = self.place(index, folder, session)
+    if not where:
       return
-    session = str(usage.get("sessionId") or info.get("id") or Path(path).parent.name)
-    cwd = str(info.get("cwd") or summary.get("cwd") or "unknown")
-    title = info.get("title") or summary.get("title")
-    if title:
-      index.title("grok", session, str(title))
-    turns = [t for t in usage.get("turns") or [] if isinstance(t, dict)]
-    if not turns:
-      # No turn list: the session's own total, at the time the file was written.
-      whole = usage.get("session") if isinstance(usage.get("session"), dict) else usage
-      turns = [dict(whole, endedAt=usage.get("updatedAt"))]
-    for n, turn in enumerate(turns):
-      ts = epoch_ms(turn.get("endedAt") or turn.get("timestamp"))
-      if ts is None:
-        continue
-      for model, b in self.models(turn):
-        prompt = int(b.get("inputTokens") or 0)
-        cache_read = min(prompt, int(b.get("cachedReadTokens") or 0))
-        cache_write = int(b.get("cacheCreationTokens") or 0)
-        output = int(b.get("outputTokens") or 0)
-        reasoning = min(output, int(b.get("reasoningTokens") or 0))
-        if prompt + output + cache_write <= 0:
-          continue
-        index.event(
-          f"grok:{session}:{n}:{model}", "grok", ts, session, cwd, model, input=prompt - cache_read,
-          output=output - reasoning, reasoning=reasoning, cache_read=cache_read, cache_write=cache_write,
-          context=prompt, replace=True)
+    for n, turn in enumerate(usage.get("turns") or []):
+      ts = epoch_ms(turn.get("endedAt")) if isinstance(turn, dict) else None
+      if ts is not None:
+        self.spend(index, f"turn{turn.get('turnNumber', n)}", ts, session, *where, turn)
+
+
+class BuildUpdates(Build):
+  # updates.jsonl, for builds that write no usage.json: one line per session
+  # update, and a turn's spend rides on the update that ends it.
+  def files(self):
+    return sorted(glob.glob(str(self.root() / "**" / "updates.jsonl"), recursive=True))
+
+  def init_state(self, path):
+    return None
+
+  def line(self, index, data, start, end, offset, state, path):
+    if data.find(b'"turn_completed"', start, end) < 0 or data.find(b'"usage"', start, end) < 0:
+      return
+    folder = Path(path).parent
+    if (folder / "usage.json").exists():
+      return  # the fuller account of the same turns
+    d = json.loads(data[start:end])
+    params = d.get("params") if isinstance(d.get("params"), dict) else {}
+    update = params.get("update") if isinstance(params.get("update"), dict) else {}
+    usage = update.get("usage")
+    if update.get("sessionUpdate") != "turn_completed" or not isinstance(usage, dict):
+      return
+    meta = params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+    at = meta.get("agentTimestampMs")
+    ts = int(at) if isinstance(at, (int, float)) else int(float(d.get("timestamp") or 0) * 1000)
+    session = str(params.get("sessionId") or folder.name)
+    where = self.place(index, folder, session)
+    if where and ts > 0:
+      self.spend(index, update.get("prompt_id") or offset, ts, session, *where, usage)
+
+
+def grok_home():
+  return os.environ.get("GROK_HOME") or HOME / ".grok"
+
+
+def kigi_home():
+  return os.environ.get("KIGI_SHARE_DIR") or HOME / ".kigi"
 
 
 # Order is identity: the panel shades agents by position, so append, never reorder.
-ADAPTERS = [Claude(), Codex(), Devin(), Kimi(), OpenCode(), Pi(), Hermes(), Gemini(), Grok()]
+ADAPTERS = [
+  Claude(), Codex(), Devin(), Kimi(), OpenCode(), Pi(), Hermes(), Gemini(),
+  BuildUsage("grok", "Grok", grok_home), BuildUpdates("grok", "Grok", grok_home),
+  BuildUsage("kigi", "Kigi", kigi_home), BuildUpdates("kigi", "Kigi", kigi_home),
+]
 
 
 # ------------------------------------------------------------------ scanning
@@ -802,7 +861,8 @@ def write_records(index: Index) -> None:
       "todayTokensByModel": today_models,
       "recentDays": [{"date": day, "messageCount": days.get(day, (0, 0))[1]} for day in week],
       "totalSessions": sessions, "activeDays": len(days), "activeDates": sorted(days),
-      "modelUsage": models, "limits": [], "tierLabel": info.get("tierLabel", ""),
+      # With no plan to name, the panel's subtitle says where the numbers come from.
+      "modelUsage": models, "limits": [], "tierLabel": info.get("tierLabel", "Local logs"),
       "usageStatusText": "", "authHelpText": "",
     }
     if isinstance(old, dict) and {k: v for k, v in old.items() if k != "updatedAt"} == record:

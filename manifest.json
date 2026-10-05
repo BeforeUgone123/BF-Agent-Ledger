@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "beforeugone.agents",
   "name": "Agent Ledger",
-  "version": "4.1.0",
+  "version": "4.2.0",
   "author": "BeforeUgone",
   "license": "MIT",
   "homepage": "https://github.com/BeforeUgone123/omarchy-agent-ledger",
-  "description": "AI coding usage on one page: limits, a year of activity, cost at list prices, and tokens by agent, model, project, hour and session for Claude Code, Codex, OpenCode, Pi, Hermes, Gemini CLI, Grok, Devin, Kimi Code and Fireworks. English and Chinese.",
+  "description": "AI coding usage on one page: limits, a year of activity, cost at list prices, and tokens by agent, model, project, hour and session for Claude Code, Codex, OpenCode, Pi, Hermes, Gemini CLI, Grok, Kigi, Devin, Kimi Code and Fireworks. English and Chinese.",
   "kinds": [
     "bar-widget"
   ],
@@ -46,6 +46,9 @@
           "enabled": true
         },
         "grok": {
+          "enabled": true
+        },
+        "kigi": {
           "enabled": true
         },
         "devin": {

@@ -9,6 +9,7 @@ var zh = {
   "Agents": "全部 Agent",
   "Subscription": "订阅",
   "Prepaid": "预付费",
+  "Local logs": "本地日志",
   "%1 subscription": "%1 个订阅",
   "%1 subscriptions": "%1 个订阅",
   "%1 tokens today": "今日 %1 token",

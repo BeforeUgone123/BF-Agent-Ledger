@@ -82,7 +82,8 @@ refreshes, Esc closes. From a script:
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl` (and oh-my-pi's `~/.omp`) |
 | Hermes | — | `~/.hermes/state.db`, and each profile's |
 | Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
-| Grok | — | `~/.grok/sessions/**/usage.json` |
+| Grok | — | `~/.grok/sessions/`: `usage.json`, or the turn log on older builds |
+| Kigi | — | `~/.kigi/sessions/**/updates.jsonl` |
 | Devin | none: Devin has no usage API | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | windows and balance, from the collector in `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
 | Fireworks | prepaid balance, from Omarchy's collector | — (day totals only) |
@@ -98,13 +99,13 @@ Cursor, Z.ai and others — adds its limits here as well, and an agent this
 plugin has no adapter for still gets its limits and day totals that way.
 
 **How far each adapter has been checked.** Claude Code, Codex, Devin and Kimi
-Code were verified against real logs, total for total. OpenCode, Pi, Hermes and
-Gemini CLI follow each project's own source or documented format and are tested
-against files built to that format, but have not yet been run against a real
-installation. Grok's CLI is closed, so its adapter follows the readers in other
-Omarchy plugins; treat its numbers as provisional. Hermes and Grok keep totals
-per session or turn rather than per request, so their hour-by-hour detail is
-only as fine as that.
+Code were verified against real logs, total for total. OpenCode, Pi, Hermes,
+Gemini CLI, Grok and Kigi follow each project's own source or documented format
+and are tested against files built to that format, but have not yet been run
+against a real session that spent tokens. Hermes, Grok and Kigi keep totals per
+session or turn rather than per request, so their hour-by-hour detail is only
+as fine as that, their request counts are turns, and a turn's figure includes
+the subagents it ran.
 
 ## What it reads and what it sends
 

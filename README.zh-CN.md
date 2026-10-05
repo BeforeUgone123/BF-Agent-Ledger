@@ -72,7 +72,8 @@ omarchy plugin disable omarchy.agents
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl`（以及 oh-my-pi 的 `~/.omp`） |
 | Hermes | — | `~/.hermes/state.db`，以及各 profile 的 |
 | Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
-| Grok | — | `~/.grok/sessions/**/usage.json` |
+| Grok | — | `~/.grok/sessions/`：`usage.json`，旧版本则读取轮次日志 |
+| Kigi | — | `~/.kigi/sessions/**/updates.jsonl` |
 | Devin | 无：Devin 没有用量接口 | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | 窗口和余额，来自 `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
 | Fireworks | 预付费余额，来自 Omarchy 的采集器 | —（只有每日总量） |
@@ -86,10 +87,10 @@ omarchy plugin disable omarchy.agents
 适配器的 Agent，也能通过这种方式显示限额和每日总量。
 
 **各适配器的验证程度。** Claude Code、Codex、Devin 和 Kimi Code 用真实日志逐项
-核对过。OpenCode、Pi、Hermes 和 Gemini CLI 依据各项目自己的源码或文档格式编写，
-并用按该格式构造的文件测试过，但还没有在真实安装上跑过。Grok 的 CLI 不开源，
-它的适配器参照了其他 Omarchy 插件的读取方式，数字请当作暂定。Hermes 和 Grok
-保存的是每个会话或每轮的总量而不是每次请求，所以它们的按小时明细只能精确到这个粒度。
+核对过。OpenCode、Pi、Hermes、Gemini CLI、Grok 和 Kigi 依据各项目自己的源码或
+文档格式编写，并用按该格式构造的文件测试过，但还没有在真正消耗过 token 的会话上
+跑过。Hermes、Grok 和 Kigi 保存的是每个会话或每轮的总量而不是每次请求，所以它们的
+按小时明细只能精确到这个粒度，请求数实际是轮数，一轮的数字包含它启动的子 Agent。
 
 ## 读取什么、发送什么
 
