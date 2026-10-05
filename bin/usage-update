@@ -1,0 +1,72 @@
+#!/bin/bash
+
+# Regenerates the usage records the panel reads. Omarchy's own updater runs the
+# collectors it ships (Claude Code, Codex, Fireworks, …); the collect-<agent>
+# scripts beside this file cover agents it has none for. Takes the updater's
+# arguments: [--force] [--limits-only] [--except <agent>] [agent...]
+
+here=$(cd "$(dirname "$0")" && pwd)
+USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
+PACKAGED="${OMARCHY_PATH:-/usr/share/omarchy}/bin"
+mkdir -p "$USAGE_DIR"
+
+args=("$@")
+flags=()
+only=()
+declare -A excluded
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+  --force | --limits-only) flags+=("$1") ;;
+  --except)
+    [[ $# -ge 2 ]] || exit 2
+    excluded[$2]=1
+    shift
+    ;;
+  *) only+=("$1") ;;
+  esac
+  shift
+done
+
+wanted() {
+  local agent="$1" candidate
+  [[ -n ${excluded[$agent]} ]] && return 1
+  (( ${#only[@]} == 0 )) && return 0
+  for candidate in "${only[@]}"; do
+    [[ $candidate == "$agent" ]] && return 0
+  done
+  return 1
+}
+
+collect() {
+  local collector="$1" agent="$2" record tmp
+  if ! record=$("$collector" "${flags[@]}") || [[ -z $record ]] || ! jq -e . >/dev/null 2>&1 <<<"$record"; then
+    echo "usage-update: $agent collector failed" >&2
+    return 1
+  fi
+  tmp=$(mktemp "$USAGE_DIR/.$agent.XXXXXX")
+  printf '%s\n' "$record" >"$tmp"
+  mv "$tmp" "$USAGE_DIR/$agent.json"
+}
+
+pids=()
+if command -v omarchy-agent-usage-update >/dev/null; then
+  omarchy-agent-usage-update "${args[@]}" &
+  pids+=($!)
+fi
+
+for collector in "$here"/collect-*; do
+  [[ -x $collector ]] || continue
+  agent="${collector##*/collect-}"
+  # Omarchy's own collector wins as soon as it ships one for this agent.
+  [[ -x $PACKAGED/omarchy-agent-usage-$agent ]] && continue
+  wanted "$agent" || continue
+  collect "$collector" "$agent" &
+  pids+=($!)
+done
+
+status=0
+for pid in "${pids[@]}"; do
+  wait "$pid" || status=1
+done
+exit $status

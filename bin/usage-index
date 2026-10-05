@@ -1,0 +1,690 @@
+#!/usr/bin/python3
+"""Index the agents' raw session logs for the agents panel.
+
+The collectors' usage records carry limits and a week of day totals. Ranges,
+projects, sessions and hours need per-request detail, so this scans the logs
+themselves — incrementally, into a small SQLite database — and writes one
+compact cube (cube.json) that the panel aggregates in place.
+
+Adding an agent is adding an Adapter below. Python standard library only,
+and nothing here talks to the network.
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import sqlite3
+import sys
+import time
+from datetime import datetime
+from pathlib import Path
+
+HOME = Path.home()
+PLUGIN = Path(__file__).resolve().parent.parent
+STATE = Path(os.environ.get("XDG_STATE_HOME") or HOME / ".local" / "state") / "omarchy" / "agents" / "index"
+HEAD = 240  # bytes of a line checked before deciding to parse it
+
+
+def use_system_timezone() -> None:
+  """Bucket days in the machine's timezone even if TZ says otherwise."""
+  parts = os.path.realpath("/etc/localtime").split("/zoneinfo/")
+  if len(parts) == 2:
+    os.environ["TZ"] = parts[1]
+    time.tzset()
+
+
+def epoch_ms(raw: object) -> int | None:
+  if not isinstance(raw, str):
+    return None
+  # Some logs write nanoseconds; fromisoformat stops at microseconds.
+  text = re.sub(r"(\.\d{6})\d+", r"\1", raw.strip().replace("Z", "+00:00"))
+  try:
+    return int(datetime.fromisoformat(text).timestamp() * 1000)
+  except ValueError:
+    return None
+
+
+class Index:
+  def __init__(self, path: Path):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    self.db = sqlite3.connect(path)
+    self.db.executescript("""
+      CREATE TABLE IF NOT EXISTS events (
+        key TEXT PRIMARY KEY, agent TEXT NOT NULL, ts INTEGER NOT NULL, session TEXT NOT NULL,
+        project TEXT NOT NULL, model TEXT NOT NULL, input INTEGER NOT NULL, output INTEGER NOT NULL,
+        reasoning INTEGER NOT NULL, cache_read INTEGER NOT NULL, cache_write INTEGER NOT NULL,
+        cache_write_1h INTEGER NOT NULL, context INTEGER NOT NULL, fast INTEGER NOT NULL
+      ) WITHOUT ROWID;
+      CREATE TABLE IF NOT EXISTS files (path TEXT PRIMARY KEY, offset INTEGER NOT NULL, state TEXT);
+      CREATE TABLE IF NOT EXISTS sessions (session TEXT PRIMARY KEY, agent TEXT NOT NULL, title TEXT NOT NULL);
+    """)
+
+  def event(self, key, agent, ts, session, project, model, input=0, output=0, reasoning=0,
+            cache_read=0, cache_write=0, cache_write_1h=0, context=0, fast=False):
+    """One model request. The token buckets are disjoint, so they add up to the whole."""
+    self.db.execute(
+      "INSERT OR IGNORE INTO events VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      (key, agent, ts, session, project, model, input, output, reasoning,
+       cache_read, cache_write, cache_write_1h, context, int(fast)))
+
+  def title(self, agent, session, title):
+    self.db.execute(
+      "INSERT INTO sessions VALUES (?, ?, ?) ON CONFLICT (session) DO UPDATE SET title = excluded.title",
+      (session, agent, title[:120]))
+
+
+# ------------------------------------------------------------------ adapters
+#
+# An adapter reads one agent's logs. It implements `line` for append-only
+# JSONL (called per complete new line, with per-file `state` kept between
+# runs) or `document` for a file rewritten as a whole (called with the full
+# text whenever the file changes, so its event keys must be stable).
+
+
+class Claude:
+  id = "claude"
+
+  def files(self):
+    root = Path(os.environ.get("CLAUDE_CONFIG_DIR") or HOME / ".claude") / "projects"
+    return sorted(glob.glob(str(root / "**" / "*.jsonl"), recursive=True))
+
+  def init_state(self, path):
+    return None
+
+  def line(self, index, data, start, end, offset, state, path):
+    if data.find(b'"usage"', start, end) < 0 and data.find(b'"ai-title"', start, end) < 0:
+      return
+    d = json.loads(data[start:end])
+    if d.get("type") == "ai-title":
+      if d.get("sessionId") and d.get("aiTitle"):
+        index.title("claude", d["sessionId"], str(d["aiTitle"]))
+      return
+    m = d.get("message")
+    u = m.get("usage") if isinstance(m, dict) else None
+    ts = epoch_ms(d.get("timestamp"))
+    if d.get("type") != "assistant" or not u or ts is None or m.get("model") in (None, "<synthetic>"):
+      return
+    # output_tokens already includes thinking; split it out so the parts stay additive.
+    out = u.get("output_tokens") or 0
+    reasoning = min(out, (u.get("output_tokens_details") or {}).get("thinking_tokens") or 0)
+    fresh = u.get("input_tokens") or 0
+    cache_read = u.get("cache_read_input_tokens") or 0
+    cache_write = u.get("cache_creation_input_tokens") or 0
+    index.event(
+      # One API response is logged once per content block with identical usage,
+      # and resumed sessions copy earlier lines into a new file.
+      f"claude:{m.get('id') or d.get('uuid')}:{d.get('requestId') or ''}",
+      "claude", ts, d.get("sessionId") or "unknown", d.get("cwd") or "unknown", m["model"],
+      input=fresh, output=out - reasoning, reasoning=reasoning, cache_read=cache_read, cache_write=cache_write,
+      cache_write_1h=min(cache_write, (u.get("cache_creation") or {}).get("ephemeral_1h_input_tokens") or 0),
+      context=fresh + cache_read + cache_write, fast=u.get("speed") == "fast")
+
+
+class Codex:
+  id = "codex"
+
+  def home(self):
+    return Path(os.environ.get("CODEX_HOME") or HOME / ".codex")
+
+  def files(self):
+    found = []
+    for folder in ("sessions", "archived_sessions"):
+      found += glob.glob(str(self.home() / folder / "**" / "*.jsonl"), recursive=True)
+    return sorted(found)
+
+  def init_state(self, path):
+    match = re.search(r"([0-9a-f]{8}-[0-9a-f-]{27})\.jsonl$", path)
+    return {"session": match.group(1) if match else path, "cwd": "unknown", "model": "unknown", "prev": None}
+
+  def line(self, index, data, start, end, offset, st, path):
+    head = data[start:min(end, start + HEAD)]
+    if b'"session_meta"' in head:
+      d = json.loads(data[start:end])
+      if d.get("type") == "session_meta":
+        p = d.get("payload") or {}
+        st["session"] = p.get("id") or p.get("session_id") or st["session"]
+        st["cwd"] = p.get("cwd") or st["cwd"]
+      return
+    if b'"turn_context"' in head:
+      d = json.loads(data[start:end])
+      if d.get("type") == "turn_context":
+        p = d.get("payload") or {}
+        st["model"] = p.get("model") or st["model"]
+        st["cwd"] = p.get("cwd") or st["cwd"]
+      return
+    if b'"token_count"' not in head:
+      return
+    d = json.loads(data[start:end])
+    p = d.get("payload") or {}
+    info = p.get("info") or {}
+    ts = epoch_ms(d.get("timestamp"))
+    if d.get("type") != "event_msg" or p.get("type") != "token_count" or not info.get("total_token_usage") or ts is None:
+      return
+
+    def totals(u):
+      return [u.get("input_tokens") or 0, u.get("cached_input_tokens") or 0, u.get("output_tokens") or 0,
+              u.get("reasoning_output_tokens") or 0, u.get("total_tokens") or 0]
+
+    cur = totals(info["total_token_usage"])
+    prev = st["prev"]
+    st["prev"] = cur
+    # Events carry a running total that is re-sent unchanged and restarts after
+    # compaction, so usage is the increase since the previous event.
+    if prev is None or cur[4] < prev[4]:
+      delta = totals(info["last_token_usage"]) if info.get("last_token_usage") else cur
+    elif cur[4] == prev[4]:
+      return
+    else:
+      delta = [max(0, a - b) for a, b in zip(cur, prev)]
+    # input_tokens includes cached ones and output_tokens includes reasoning.
+    cache_read = min(delta[1], delta[0])
+    reasoning = min(delta[3], delta[2])
+    index.event(
+      f"codex:{st['session']}:{offset}", "codex", ts, st["session"], st["cwd"], st["model"],
+      input=delta[0] - cache_read, output=delta[2] - reasoning, reasoning=reasoning, cache_read=cache_read,
+      context=(info.get("last_token_usage") or {}).get("input_tokens") or 0)
+
+  def finalize(self, index):
+    # Thread titles live in Codex's own state database, not in the rollouts.
+    paths = sorted(glob.glob(str(self.home() / "state_*.sqlite")),
+                   key=lambda p: int(re.search(r"state_(\d+)", p).group(1)))
+    if not paths:
+      return
+    try:
+      db = sqlite3.connect(f"file:{paths[-1]}?mode=ro", uri=True)
+      db.row_factory = sqlite3.Row
+      for t in db.execute("SELECT * FROM threads"):
+        keys = t.keys()
+        title = next((t[k] for k in ("name", "title", "first_user_message") if k in keys and t[k]), None)
+        if title:
+          index.title("codex", t["id"], str(title))
+      db.close()
+    except sqlite3.Error:
+      pass  # schema differs between Codex versions; titles are optional
+
+
+class Devin:
+  id = "devin"
+  # Devin has logs but no usage API, so no collector reports it: the index
+  # writes its usage record itself (see write_records).
+  record = {"name": "Devin", "tierLabel": "Devin CLI"}
+
+  def home(self):
+    return Path(os.environ.get("XDG_DATA_HOME") or HOME / ".local" / "share") / "devin" / "cli"
+
+  def files(self):
+    return sorted(glob.glob(str(self.home() / "transcripts" / "*.json")))
+
+  def prepare(self):
+    # Transcripts carry tokens but not where the session ran or what it was
+    # called; those live in Devin's session database.
+    self.sessions = {}
+    try:
+      db = sqlite3.connect(f"file:{self.home() / 'sessions.db'}?mode=ro", uri=True)
+      for sid, cwd, title in db.execute("SELECT id, working_directory, title FROM sessions"):
+        self.sessions[str(sid)] = (cwd or "unknown", title or "")
+      db.close()
+    except sqlite3.Error:
+      pass  # schema differs between Devin versions; usage still counts without it
+
+  # One ATIF JSON transcript per session, rewritten as the session grows.
+  def document(self, index, text, path):
+    transcript = json.loads(text)
+    steps = transcript.get("steps")
+    if not isinstance(steps, list):
+      return
+    session = str(transcript.get("session_id") or Path(path).stem)
+    cwd = self.sessions.get(session, ("unknown", ""))[0]
+    fallback = str((transcript.get("agent") or {}).get("model_name") or "devin")
+    for step in steps:
+      m = step.get("metrics") if isinstance(step, dict) else None
+      if not isinstance(m, dict) or step.get("source") != "agent":
+        continue
+      prompt = int(m.get("prompt_tokens") or 0)
+      output = int(m.get("completion_tokens") or 0)
+      ts = epoch_ms(step.get("timestamp"))
+      if prompt + output <= 0 or ts is None:
+        continue
+      # prompt_tokens is the whole prompt: cache hits and cache writes are
+      # slices of it, so subtract them to keep the buckets disjoint.
+      cache_read = min(prompt, int(m.get("cached_tokens") or 0))
+      cache_write = min(prompt - cache_read, int((m.get("extra") or {}).get("cache_creation_input_tokens") or 0))
+      index.event(
+        f"devin:{session}:{step.get('step_id')}", "devin", ts, session, cwd, str(step.get("model_name") or fallback),
+        input=prompt - cache_read - cache_write, output=output, cache_read=cache_read, cache_write=cache_write,
+        context=prompt)
+
+  def finalize(self, index):
+    for session, (_, title) in self.sessions.items():
+      if title:
+        index.title("devin", session, title)
+
+
+class Kimi:
+  id = "kimi"
+
+  def home(self):
+    return Path(os.environ.get("KIMI_CODE_HOME") or HOME / ".kimi-code")
+
+  # sessions/<workspace>/session_<id>/agents/<agent>/wire.jsonl: one log per
+  # agent, so a session's subagents sit beside its main agent.
+  def files(self):
+    return sorted(glob.glob(str(self.home() / "sessions" / "**" / "wire.jsonl"), recursive=True))
+
+  def prepare(self):
+    # Where a session ran is in Kimi's own index, not in the session's log.
+    self.cwd = {}
+    try:
+      with open(self.home() / "session_index.jsonl", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+          try:
+            d = json.loads(line)
+            self.cwd[str(d["sessionId"])] = str(d.get("workDir") or "unknown")
+          except (ValueError, KeyError, TypeError):
+            continue
+    except OSError:
+      pass
+
+  def init_state(self, path):
+    folder = next((part for part in Path(path).parts if part.startswith("session_")), Path(path).parent.name)
+    return {"folder": folder, "titled": False}
+
+  def line(self, index, data, start, end, offset, st, path):
+    head = data[start:min(end, start + HEAD)]
+    session = st["folder"].removeprefix("session_")
+    if b'"turn.prompt"' in head:
+      # Kimi keeps no session titles; the first thing asked stands in for one.
+      if st["titled"] or Path(path).parent.name != "main":
+        return
+      d = json.loads(data[start:end])
+      for item in d.get("input") or []:
+        text = " ".join(str(item.get("text") or "").split()) if isinstance(item, dict) else ""
+        if d.get("type") == "turn.prompt" and text:
+          index.title("kimi", session, text)
+          st["titled"] = True
+          return
+      return
+    if b'"usage.record"' not in head:
+      return
+    d = json.loads(data[start:end])
+    u = d.get("usage")
+    ts = d.get("time")
+    if d.get("type") != "usage.record" or not isinstance(u, dict) or not isinstance(ts, (int, float)):
+      return
+    fresh = int(u.get("inputOther") or 0)
+    output = int(u.get("output") or 0)
+    cache_read = int(u.get("inputCacheRead") or 0)
+    cache_write = int(u.get("inputCacheCreation") or 0)
+    if fresh + output + cache_read + cache_write <= 0:
+      return
+    index.event(
+      f"kimi:{session}:{Path(path).parent.name}:{offset}", "kimi",
+      int(ts if ts > 10_000_000_000 else ts * 1000), session, self.cwd.get(st["folder"], "unknown"),
+      str(d.get("model") or "kimi"), input=fresh, output=output, cache_read=cache_read, cache_write=cache_write,
+      context=fresh + cache_read + cache_write)
+
+
+# Order is identity: the panel shades agents by position, so append, never reorder.
+ADAPTERS = [Claude(), Codex(), Devin(), Kimi()]
+
+
+# ------------------------------------------------------------------ scanning
+
+
+def scan(index: Index) -> int:
+  db = index.db
+  before = db.total_changes
+  for adapter in ADAPTERS:
+    if hasattr(adapter, "prepare"):
+      adapter.prepare()
+    for path in adapter.files():
+      try:
+        stat = os.stat(path)
+      except OSError:
+        continue
+      saved = db.execute("SELECT offset, state FROM files WHERE path = ?", (path,)).fetchone()
+
+      if hasattr(adapter, "document"):
+        # Whole-file source: re-read whenever it changed. A rewrite can keep
+        # the size, so the modification time is part of the fingerprint.
+        fingerprint = json.dumps({"mtime": stat.st_mtime_ns})
+        if saved and saved[0] == stat.st_size and saved[1] == fingerprint:
+          continue
+        try:
+          adapter.document(index, Path(path).read_text(encoding="utf-8"), path)
+        except (OSError, ValueError):
+          continue  # caught mid-write; the next run sees the finished file
+        db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (path, stat.st_size, fingerprint))
+        continue
+
+      offset = saved[0] if saved else 0
+      state = json.loads(saved[1]) if saved and saved[1] else adapter.init_state(path)
+      if stat.st_size < offset:
+        # Rewritten or truncated: start over. Event keys keep this idempotent.
+        offset, state = 0, adapter.init_state(path)
+      if stat.st_size == offset:
+        continue
+      with open(path, "rb") as handle:
+        handle.seek(offset)
+        data = handle.read(stat.st_size - offset)
+      last = data.rfind(b"\n")  # anything after it is a line still being written
+      start = 0
+      while start <= last:
+        end = data.index(b"\n", start)
+        if end > start:
+          try:
+            adapter.line(index, data, start, end, offset + start, state, path)
+          except (ValueError, KeyError, TypeError, AttributeError):
+            pass  # a malformed line must not block the rest of the file
+        start = end + 1
+      db.execute("INSERT OR REPLACE INTO files VALUES (?, ?, ?)", (path, offset + last + 1, json.dumps(state)))
+    if hasattr(adapter, "finalize"):
+      adapter.finalize(index)
+    db.commit()
+  return db.total_changes - before
+
+
+# ------------------------------------------------------------------ records
+#
+# The panel lists an agent once a usage record exists for it. Collectors write
+# those, but an agent with logs and no usage API has no collector to run, so
+# its record is derived from the index instead.
+
+RECORD_SOURCE = "beforeugone.agents/index"
+
+
+def write_records(index: Index) -> None:
+  usage = STATE.parent / "usage"
+  today = time.strftime("%Y-%m-%d")
+  week = [time.strftime("%Y-%m-%d", time.localtime(time.time() - back * 86400)) for back in range(6, -1, -1)]
+  for adapter in ADAPTERS:
+    info = getattr(adapter, "record", None)
+    if not info:
+      continue
+    path = usage / f"{adapter.id}.json"
+    try:
+      old = json.loads(path.read_text())
+    except (OSError, ValueError):
+      old = None
+    # A record someone else wrote is theirs: `source` marks the ones to replace.
+    if isinstance(old, dict) and old.get("source") != RECORD_SOURCE:
+      continue
+
+    days = {day: (sessions, tokens) for day, sessions, tokens in index.db.execute(
+      """SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime'), COUNT(DISTINCT session),
+                SUM(input + output + reasoning + cache_read + cache_write)
+         FROM events WHERE agent = ? GROUP BY 1""", (adapter.id,))}
+    if not days:
+      continue  # never used here: no record, and so no empty tab
+    models = {}
+    today_models = {}
+    for model, day, fresh, output, cache_read, cache_write in index.db.execute(
+        """SELECT model, strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime') = ?, SUM(input),
+                  SUM(output + reasoning), SUM(cache_read), SUM(cache_write)
+           FROM events WHERE agent = ? GROUP BY 1, 2""", (today, adapter.id)):
+      m = models.setdefault(model, {"inputTokens": 0, "outputTokens": 0, "cacheReadInputTokens": 0,
+                                    "cacheCreationInputTokens": 0})
+      m["inputTokens"] += fresh
+      m["outputTokens"] += output
+      m["cacheReadInputTokens"] += cache_read
+      m["cacheCreationInputTokens"] += cache_write
+      if day:
+        today_models[model] = fresh + output + cache_read + cache_write
+    sessions = index.db.execute("SELECT COUNT(DISTINCT session) FROM events WHERE agent = ?",
+                                (adapter.id,)).fetchone()[0]
+
+    record = {
+      "schemaVersion": 1, "id": adapter.id, "name": info["name"], "source": RECORD_SOURCE,
+      "ready": True, "hasLocalStats": True,
+      # The index counts model requests, not the prompts a person typed.
+      "hasPromptStats": False, "todayPrompts": 0, "totalPrompts": 0,
+      "todaySessions": days.get(today, (0, 0))[0], "todayTotalTokens": days.get(today, (0, 0))[1],
+      "todayTokensByModel": today_models,
+      "recentDays": [{"date": day, "messageCount": days.get(day, (0, 0))[1]} for day in week],
+      "totalSessions": sessions, "activeDays": len(days), "activeDates": sorted(days),
+      "modelUsage": models, "limits": [], "tierLabel": info.get("tierLabel", ""),
+      "usageStatusText": "", "authHelpText": "",
+    }
+    if isinstance(old, dict) and {k: v for k, v in old.items() if k != "updatedAt"} == record:
+      continue  # nothing new: leave the file alone so the panel does not reload
+    record["updatedAt"] = datetime.now().astimezone().isoformat()
+    usage.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps(record, ensure_ascii=False) + "\n")
+    os.replace(tmp, path)
+
+
+# ------------------------------------------------------------------ cube
+
+
+def load_pricing() -> dict:
+  """The shipped price list, with the user's own pricing.local.json laid over it."""
+  models = {}
+  for name in ("pricing.json", "pricing.local.json"):
+    try:
+      models.update(json.loads((PLUGIN / name).read_text()).get("models") or {})
+    except (OSError, ValueError, AttributeError):
+      pass  # the local file is optional, and a broken one must not take the list down with it
+  # Devin spells version numbers with dashes (gpt-5-6-sol, gemini-3-8-flash).
+  for name in list(models):
+    models.setdefault(name.replace(".", "-"), models[name])
+  return models
+
+
+# What an agent appends to a provider's model id: a dated snapshot
+# (claude-haiku-4-5-20251001), a reasoning effort (Devin's claude-opus-5-5-high,
+# swe-2-max) and a speed tier (claude-opus-5-5-high-fast, gpt-6-sol-high-priority).
+MODEL_SUFFIX = re.compile(r"-(\d{8}|fast|priority|none|minimal|low|medium|high|xhigh|max)$")
+
+
+def price_for(pricing: dict, model: str):
+  """(price or None, whether the id itself names a fast tier).
+
+  Suffixes are peeled off one at a time until the list has the name. An entry
+  always wins over peeling, so `"name": null` keeps that exact model unpriced.
+  """
+  name, fast = model, False
+  while name not in pricing:
+    suffix = MODEL_SUFFIX.search(name)
+    if not suffix:
+      return None, fast
+    fast = fast or suffix.group(1) in ("fast", "priority")
+    name = name[:suffix.start()]
+  return pricing[name], fast
+
+
+def cost(price: dict, fresh, output, cache_read, write_5m, write_1h, fast) -> float:
+  base = price["input"]
+  w5 = price.get("cacheWrite5m", base)
+  usd = (fresh * base + output * price["output"] + cache_read * price.get("cacheRead", base)
+         + write_5m * w5 + write_1h * price.get("cacheWrite1h", w5)) / 1e6
+  return usd * price.get("fastMultiplier", 1) if fast else usd
+
+
+# ------------------------------------------------------------------ plan windows
+#
+# A usage record says "43% of the 5-hour window is used" but not 43% of what.
+# The index knows what was actually spent inside that window, so the two
+# together give the size of the allowance: used / share used. A window is only
+# reported when every piece can be read; anything missing means no estimate.
+
+HOUR = 3_600_000
+DAY = 24 * HOUR
+GENERIC_LIMIT = re.compile(r"^(session|weekly|monthly|\d+\s*[hm]\s+window)\b", re.I)
+
+
+def words(text: str) -> set[str]:
+  return set(re.findall(r"[a-z]+|\d+", text.lower()))
+
+
+def parse_limit(agent: str, label: str):
+  """(window length in ms, model words or None), or None if the window cannot be placed."""
+  text = label.strip()
+  low = text.lower()
+  if GENERIC_LIMIT.match(text):
+    if "month" in low or "30-day" in low:
+      return 30 * DAY, None
+    if "week" in low or "7-day" in low:
+      return 7 * DAY, None
+    hours = re.search(r"(\d+)\s*-?\s*h(?:our)?s?\b", low)
+    if hours:
+      return int(hours.group(1)) * HOUR, None
+    minutes = re.search(r"(\d+)\s*-?\s*m(?:in(?:ute)?s?)?\b", low)
+    if minutes:
+      return int(minutes.group(1)) * 60_000, None
+    return None
+  # A model-scoped allowance is titled "<model> <Weekly|Session>". Its length
+  # comes from that last word alone: a name like "Opus 5 (1M context)" would
+  # otherwise read as a one-minute window.
+  scoped = re.match(r"^(.*\S)\s+(Weekly|Session)$", text)
+  if not scoped:
+    return None
+  if scoped.group(2) == "Weekly":
+    return 7 * DAY, words(scoped.group(1))
+  # Only Claude's session length is known; elsewhere a bare "Session" is not a duration.
+  return (5 * HOUR, words(scoped.group(1))) if agent == "claude" else None
+
+
+def measured_at(agent: str, limit: dict, record: dict, record_path: Path) -> int:
+  """When the percentage was read, so usage is counted up to that moment and no further."""
+  cache_home = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
+  try:
+    probe = json.loads((cache_home / "omarchy" / "agent-usage" / f"{agent}-limits.json").read_text())
+    if limit in (probe.get("limits") or []) and probe.get("fetchedAtMs"):
+      return int(probe["fetchedAtMs"])
+  except (OSError, ValueError):
+    pass
+  return epoch_ms(record.get("updatedAt")) or int(record_path.stat().st_mtime * 1000)
+
+
+def plan_windows(index: Index, pricing: dict) -> list:
+  out = []
+  for path in sorted((STATE.parent / "usage").glob("*.json")):
+    try:
+      record = json.loads(path.read_text())
+    except (OSError, ValueError):
+      continue
+    agent = str(record.get("id") or path.stem)
+    for limit in record.get("limits") or []:
+      if not isinstance(limit, dict):
+        continue
+      label = str(limit.get("label") or "")
+      share = limit.get("percent")
+      resets = epoch_ms(limit.get("resetsAt"))
+      placed = parse_limit(agent, label)
+      if not placed or resets is None or not isinstance(share, (int, float)) or not 0 < share <= 1:
+        continue
+      span, model_words = placed
+      read_at = measured_at(agent, limit, record, path)
+      if resets <= read_at:
+        continue  # the reading describes a window that has already rolled over
+      start = resets - span
+
+      total = {"requests": 0, "input": 0, "output": 0, "cacheRead": 0, "cacheWrite": 0}
+      usd = 0.0
+      priced = True
+      for model, fast, n, fresh, output, cache_read, cache_write, cache_write_1h in index.db.execute(
+          """SELECT model, fast, COUNT(*), SUM(input), SUM(output + reasoning), SUM(cache_read),
+                    SUM(cache_write), SUM(cache_write_1h)
+             FROM events WHERE agent = ? AND ts >= ? AND ts <= ? GROUP BY 1, 2""", (agent, start, read_at)):
+        if model_words is not None and not model_words <= words(model):
+          continue
+        total["requests"] += n
+        total["input"] += fresh
+        total["output"] += output
+        total["cacheRead"] += cache_read
+        total["cacheWrite"] += cache_write
+        price, named_fast = price_for(pricing, model)
+        if price:
+          usd += cost(price, fresh, output, cache_read, cache_write - cache_write_1h, cache_write_1h, fast or named_fast)
+        else:
+          priced = False
+      if total["requests"] == 0:
+        continue  # nothing of this window ran through these logs
+      out.append({
+        "agent": agent, "label": label, "title": str(limit.get("title") or ""), "share": share,
+        "start": start, "readAt": read_at, "resetsAt": resets, "span": span,
+        **total, "cost": round(usd, 6) if priced else None,
+      })
+  return out
+
+
+def build_cube(index: Index) -> dict:
+  """Hourly rows in local time, with every repeated string replaced by an index."""
+  pricing = load_pricing()
+  tables = {"agents": {}, "models": {}, "projects": {}}
+  session_ids: dict[str, int] = {}
+  sessions = []
+
+  def slot(table, value):
+    return tables[table].setdefault(value, len(tables[table]))
+
+  for a in ADAPTERS:  # keeps agent order stable from run to run
+    slot("agents", a.id)
+
+  for sid, agent, start, end, peak, title in index.db.execute(
+      """SELECT e.session, e.agent, MIN(e.ts), MAX(e.ts), MAX(e.context), s.title
+         FROM events e LEFT JOIN sessions s ON s.session = e.session GROUP BY e.session ORDER BY 3"""):
+    session_ids[sid] = len(sessions)
+    sessions.append([sid, slot("agents", agent), title or "", start, end, peak])
+
+  rows = []
+  unpriced = set()
+  for (date, hour, agent, model, project, session, fast, fresh, output, reasoning,
+       cache_read, cache_write, cache_write_1h, n) in index.db.execute(
+      """SELECT strftime('%Y-%m-%d', ts / 1000, 'unixepoch', 'localtime'),
+                CAST(strftime('%H', ts / 1000, 'unixepoch', 'localtime') AS INTEGER),
+                agent, model, project, session, fast,
+                SUM(input), SUM(output), SUM(reasoning), SUM(cache_read), SUM(cache_write), SUM(cache_write_1h), COUNT(*)
+         FROM events GROUP BY 1, 2, 3, 4, 5, 6, 7 ORDER BY 1, 2"""):
+    price, named_fast = price_for(pricing, model)
+    usd = None
+    if price:
+      usd = round(cost(price, fresh, output + reasoning, cache_read, cache_write - cache_write_1h, cache_write_1h,
+                       fast or named_fast), 6)
+    else:
+      unpriced.add(model)
+    rows.append([date, hour, slot("agents", agent), slot("models", model), slot("projects", project),
+                 session_ids[session], fresh, output, reasoning, cache_read, cache_write, usd, n])
+
+  return {
+    "schemaVersion": 1,
+    "generatedAt": int(time.time() * 1000),
+    "home": str(HOME),
+    # row: date, hour, agent, model, project, session, input, output, reasoning, cacheRead, cacheWrite, cost, requests
+    # session: id, agent, title, start, end, peak context
+    **{name: list(table) for name, table in tables.items()},
+    "sessions": sessions,
+    "unpriced": sorted(unpriced),
+    # Each readable limit window with what was spent inside it.
+    "windows": plan_windows(index, pricing),
+    "rows": rows,
+  }
+
+
+def main() -> None:
+  use_system_timezone()
+  index = Index(STATE / "usage.db")
+  added = scan(index)
+  write_records(index)
+  cube = build_cube(index)
+  out = STATE / "cube.json"
+  try:
+    old = json.loads(out.read_text())
+    old["generatedAt"] = cube["generatedAt"]
+    if old == cube:
+      return  # nothing new: leave the file alone so the panel does not reload
+  except (OSError, ValueError):
+    pass
+  tmp = out.with_suffix(".tmp")
+  tmp.write_text(json.dumps(cube, separators=(",", ":"), ensure_ascii=False))
+  os.replace(tmp, out)
+  if "--verbose" in sys.argv:
+    print(f"{added} new requests, {len(cube['rows'])} rows -> {out}")
+
+
+if __name__ == "__main__":
+  main()

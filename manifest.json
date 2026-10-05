@@ -1,0 +1,173 @@
+{
+  "schemaVersion": 1,
+  "id": "beforeugone.agents",
+  "name": "Agent Ledger",
+  "version": "4.0.0",
+  "author": "BeforeUgone",
+  "license": "MIT",
+  "homepage": "https://github.com/BeforeUgone123/omarchy-agent-ledger",
+  "description": "AI coding usage on one page: limits, a year of activity, cost at list prices, and tokens by agent, model, project, hour and session for Claude Code, Codex, Devin, Kimi Code and Fireworks. English and Chinese.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "activation": "on-demand",
+  "entryPoints": {
+    "barWidget": "Panel.qml"
+  },
+  "barWidget": {
+    "displayName": "Agent Ledger",
+    "description": "One bar icon and one page for every AI coding subscription: rate-limit meters, a GitHub-style activity calendar, plan capacity, estimated cost, and a range-filtered breakdown by agent, model, project, hour and session. Sections can be reordered or hidden, and the page switches between English and Chinese.",
+    "category": "AI",
+    "aliases": [
+      "agents",
+      "agent-ledger",
+      "model-usage",
+      "token-usage"
+    ],
+    "allowMultiple": false,
+    "defaults": {
+      "providers": {
+        "claude": {
+          "enabled": true
+        },
+        "codex": {
+          "enabled": true
+        },
+        "devin": {
+          "enabled": true
+        },
+        "kimi": {
+          "enabled": true
+        },
+        "fireworks": {
+          "enabled": true
+        }
+      },
+      "refreshIntervalSec": 900,
+      "syncMode": "Off",
+      "syncDir": "",
+      "syncFileName": "",
+      "syncDeviceId": "",
+      "sections": "summary,heatmap,limits,capacity,trend,agents,models,projects,breakdown,hours,sessions",
+      "heatmapWeeks": 53,
+      "heatmapTint": "Foreground",
+      "panelWidth": 460,
+      "listRows": 5,
+      "defaultRange": "All",
+      "language": "English"
+    },
+    "schema": [
+      {
+        "key": "refreshIntervalSec",
+        "type": "integer",
+        "label": "Refresh interval (seconds)",
+        "min": 30,
+        "max": 3600,
+        "step": 30,
+        "defaultValue": 900
+      },
+      {
+        "key": "syncMode",
+        "type": "enum",
+        "label": "Synced aggregation",
+        "options": [
+          "Off",
+          "On"
+        ],
+        "defaultValue": "Off",
+        "description": "When On, write this machine's local usage snapshot and merge snapshots from other machines."
+      },
+      {
+        "key": "syncDir",
+        "type": "path",
+        "label": "Sync folder",
+        "defaultValue": "",
+        "description": "A folder synced by Syncthing, Dropbox, rsync, etc."
+      },
+      {
+        "key": "syncFileName",
+        "type": "string",
+        "label": "Snapshot file name",
+        "defaultValue": "",
+        "description": "Optional. Defaults to <hostname>.json. Use a different file name on each machine, such as laptop.json or desktop.json."
+      },
+      {
+        "key": "syncDeviceId",
+        "type": "string",
+        "label": "Device id",
+        "defaultValue": "",
+        "description": "Optional stable device name used inside synced aggregate snapshots."
+      },
+      {
+        "key": "heatmapWeeks",
+        "type": "integer",
+        "label": "Calendar weeks",
+        "min": 4,
+        "max": 53,
+        "step": 1,
+        "defaultValue": 53,
+        "description": "How far back the activity calendar reaches. Fewer weeks draw larger cells."
+      },
+      {
+        "key": "heatmapTint",
+        "type": "enum",
+        "label": "Calendar colour",
+        "options": [
+          "Foreground",
+          "Accent"
+        ],
+        "defaultValue": "Foreground"
+      },
+      {
+        "key": "panelWidth",
+        "type": "integer",
+        "label": "Panel width",
+        "min": 340,
+        "max": 720,
+        "step": 20,
+        "defaultValue": 460
+      },
+      {
+        "key": "sections",
+        "type": "string",
+        "label": "Sections",
+        "defaultValue": "summary,heatmap,limits,capacity,trend,agents,models,projects,breakdown,hours,sessions",
+        "description": "Comma-separated, drawn in this order; leave one out to hide it. The panel's \"Customize sections\" button edits this. Available: summary, heatmap, limits, capacity, trend, agents, models, projects, breakdown, hours, sessions."
+      },
+      {
+        "key": "defaultRange",
+        "type": "enum",
+        "label": "Range when the panel opens",
+        "options": [
+          "Today",
+          "7d",
+          "30d",
+          "90d",
+          "All"
+        ],
+        "defaultValue": "All"
+      },
+      {
+        "key": "listRows",
+        "type": "integer",
+        "label": "Rows per list",
+        "min": 1,
+        "max": 12,
+        "step": 1,
+        "defaultValue": 5,
+        "description": "How many models, projects and sessions each list shows."
+      },
+      {
+        "key": "language",
+        "type": "enum",
+        "label": "Language",
+        "options": [
+          "English",
+          "Chinese"
+        ],
+        "defaultValue": "English",
+        "description": "The panel's language. The EN / 中 switch at the top of the panel sets this."
+      }
+    ]
+  }
+}

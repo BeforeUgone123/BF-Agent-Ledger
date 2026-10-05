@@ -1,0 +1,495 @@
+#!/usr/bin/python3
+"""Print a Kimi Code usage record for the agents panel.
+
+Limits and balance come from Kimi's usage endpoint, read with the token the
+Kimi CLI already keeps (`kimi login`); token counts come from the session logs
+under ~/.kimi-code. Run by bin/usage-update, which writes the record to disk.
+"""
+
+from __future__ import annotations
+
+import argparse
+import datetime as dt
+import fcntl
+import json
+import os
+import tempfile
+import time
+import tomllib
+import urllib.error
+import urllib.parse
+import urllib.request
+from pathlib import Path
+from typing import Any
+
+
+AGENT_ID = "kimi"
+AGENT_NAME = "Kimi Code"
+AUTH_HELP = "Run `kimi login` to restore authoritative usage."
+DEFAULT_API_BASE = "https://api.kimi.com/coding/v1"
+PROBE_MIN_INTERVAL_SECONDS = 15
+SCAN_REUSE_SECONDS = 15
+LIMITS_ONLY_REUSE_SECONDS = 900
+
+
+def kimi_home() -> Path:
+  return Path(os.environ.get("KIMI_CODE_HOME") or (Path.home() / ".kimi-code")).expanduser().resolve()
+
+
+def cache_root() -> Path:
+  root = Path(os.environ.get("XDG_CACHE_HOME") or (Path.home() / ".cache")) / "omarchy" / "agent-usage"
+  root.mkdir(parents=True, exist_ok=True)
+  return root
+
+
+def number(value: Any) -> int:
+  try:
+    return max(0, round(float(value or 0)))
+  except (TypeError, ValueError):
+    return 0
+
+
+def date_from_timestamp(value: Any) -> str:
+  raw = number(value)
+  if raw <= 0:
+    return dt.datetime.now().astimezone().date().isoformat()
+  seconds = raw / 1000 if raw > 10_000_000_000 else raw
+  return dt.datetime.fromtimestamp(seconds).astimezone().date().isoformat()
+
+
+def recent_dates() -> list[str]:
+  today = dt.datetime.now().astimezone().date()
+  return [(today - dt.timedelta(days=offset)).isoformat() for offset in range(6, -1, -1)]
+
+
+def empty_bucket() -> dict[str, int]:
+  return {
+    "inputTokens": 0,
+    "outputTokens": 0,
+    "cacheReadInputTokens": 0,
+    "cacheCreationInputTokens": 0,
+  }
+
+
+def empty_stats() -> dict[str, Any]:
+  days = recent_dates()
+  return {
+    "todayPrompts": 0,
+    "todaySessions": 0,
+    "todayTotalTokens": 0,
+    "todayTokensByModel": {},
+    "recentDays": [{"date": day, "messageCount": 0} for day in days],
+    "totalPrompts": 0,
+    "totalSessions": 0,
+    "activeDays": 0,
+    "activeDates": [],
+    "modelUsage": {},
+  }
+
+
+def session_key(path: Path) -> str:
+  for parent in path.parents:
+    if parent.name.startswith("session_"):
+      return parent.name
+  return str(path.parent)
+
+
+def usage_value(usage: dict[str, Any], *keys: str) -> int:
+  for key in keys:
+    if key in usage:
+      return number(usage.get(key))
+  return 0
+
+
+def scan_local_stats(root: Path) -> dict[str, Any]:
+  sessions_dir = root / "sessions"
+  if not sessions_dir.is_dir():
+    return empty_stats()
+
+  today = dt.datetime.now().astimezone().date().isoformat()
+  days = recent_dates()
+  recent = {day: 0 for day in days}
+  sessions: set[str] = set()
+  today_sessions: set[str] = set()
+  active_dates: set[str] = set()
+  today_by_model: dict[str, int] = {}
+  model_usage: dict[str, dict[str, int]] = {}
+  prompts = 0
+  today_prompts = 0
+
+  for path in sessions_dir.rglob("wire.jsonl"):
+    key = session_key(path)
+    try:
+      with path.open("r", encoding="utf-8", errors="replace") as handle:
+        for line in handle:
+          if '"usage.record"' not in line:
+            continue
+          try:
+            entry = json.loads(line)
+          except json.JSONDecodeError:
+            continue
+          if not isinstance(entry, dict) or entry.get("type") != "usage.record":
+            continue
+          usage = entry.get("usage")
+          if not isinstance(usage, dict):
+            continue
+
+          input_tokens = usage_value(usage, "inputOther", "input", "input_tokens", "inputTokens")
+          output_tokens = usage_value(usage, "output", "output_tokens", "outputTokens")
+          cache_read = usage_value(
+            usage,
+            "inputCacheRead",
+            "cache_read_input_tokens",
+            "cacheReadInputTokens",
+          )
+          cache_write = usage_value(
+            usage,
+            "inputCacheCreation",
+            "cache_creation_input_tokens",
+            "cacheCreationInputTokens",
+          )
+          total = input_tokens + output_tokens + cache_read + cache_write
+          if total <= 0:
+            continue
+
+          day = date_from_timestamp(entry.get("time") or entry.get("timestamp"))
+          model = str(entry.get("model") or entry.get("modelAlias") or "kimi").strip() or "kimi"
+          bucket = model_usage.setdefault(model, empty_bucket())
+          bucket["inputTokens"] += input_tokens
+          bucket["outputTokens"] += output_tokens
+          bucket["cacheReadInputTokens"] += cache_read
+          bucket["cacheCreationInputTokens"] += cache_write
+
+          prompts += 1
+          sessions.add(key)
+          active_dates.add(day)
+          if day in recent:
+            recent[day] += total
+          if day == today:
+            today_prompts += 1
+            today_sessions.add(key)
+            today_by_model[model] = today_by_model.get(model, 0) + total
+    except OSError:
+      continue
+
+  return {
+    "todayPrompts": today_prompts,
+    "todaySessions": len(today_sessions),
+    "todayTotalTokens": sum(today_by_model.values()),
+    "todayTokensByModel": today_by_model,
+    "recentDays": [{"date": day, "messageCount": recent[day]} for day in days],
+    "totalPrompts": prompts,
+    "totalSessions": len(sessions),
+    "activeDays": len(active_dates),
+    "activeDates": sorted(active_dates),
+    "modelUsage": model_usage,
+  }
+
+
+def read_json(path: Path) -> dict[str, Any]:
+  try:
+    parsed = json.loads(path.read_text(encoding="utf-8"))
+  except (OSError, json.JSONDecodeError):
+    return {}
+  return parsed if isinstance(parsed, dict) else {}
+
+
+def write_json(path: Path, payload: dict[str, Any]) -> None:
+  fd, name = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+  tmp = Path(name)
+  try:
+    with os.fdopen(fd, "w", encoding="utf-8") as handle:
+      json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+      handle.write("\n")
+    tmp.chmod(0o600)
+    tmp.replace(path)
+  except BaseException:
+    tmp.unlink(missing_ok=True)
+    raise
+
+
+def fresh_json(path: Path, max_age_seconds: float) -> dict[str, Any] | None:
+  if max_age_seconds <= 0 or not path.is_file():
+    return None
+  try:
+    if time.time() - path.stat().st_mtime <= max_age_seconds:
+      return read_json(path)
+  except OSError:
+    pass
+  return None
+
+
+def cached_local_stats(root: Path, max_age_seconds: float) -> dict[str, Any]:
+  cache = cache_root() / "kimi-scan.json"
+  lock_path = cache_root() / "kimi-scan.lock"
+  cached = fresh_json(cache, max_age_seconds)
+  if cached and isinstance(cached.get("stats"), dict):
+    return cached["stats"]
+
+  with lock_path.open("w") as lock:
+    fcntl.flock(lock, fcntl.LOCK_EX)
+    cached = fresh_json(cache, max_age_seconds)
+    if cached and isinstance(cached.get("stats"), dict):
+      return cached["stats"]
+    stats = scan_local_stats(root)
+    write_json(cache, {"stats": stats})
+    return stats
+
+
+def load_toml(path: Path) -> dict[str, Any]:
+  try:
+    with path.open("rb") as handle:
+      parsed = tomllib.load(handle)
+  except (OSError, tomllib.TOMLDecodeError):
+    return {}
+  return parsed if isinstance(parsed, dict) else {}
+
+
+def managed_provider(config: dict[str, Any]) -> dict[str, Any]:
+  providers = config.get("providers")
+  if not isinstance(providers, dict):
+    return {}
+
+  default_model = str(config.get("default_model") or "")
+  preferred = default_model.split("/", 1)[0] if "/" in default_model else ""
+  candidates: list[Any] = []
+  if preferred:
+    candidates.append(providers.get(preferred))
+  candidates.extend(providers.values())
+  for candidate in candidates:
+    if not isinstance(candidate, dict):
+      continue
+    base = str(candidate.get("base_url") or candidate.get("baseUrl") or "")
+    if "api.kimi.com/coding" in base or "api.kimi.ai/coding" in base:
+      return candidate
+  return {}
+
+
+def credential_token(root: Path, provider: dict[str, Any]) -> str:
+  credentials = root / "credentials"
+  candidates = [credentials / "kimi-code.json"]
+  if credentials.is_dir():
+    candidates.extend(sorted(credentials.glob("*kimi-code*.json")))
+  seen: set[Path] = set()
+  for path in candidates:
+    if path in seen:
+      continue
+    seen.add(path)
+    stored = read_json(path)
+    token = str(stored.get("access_token") or stored.get("accessToken") or "").strip()
+    if token:
+      return token
+
+  value = provider.get("api_key", provider.get("apiKey", ""))
+  token = str(value or "").strip()
+  if token and not token.startswith("oauth/"):
+    return token
+  return ""
+
+
+def usage_endpoint(provider: dict[str, Any]) -> str:
+  base = str(os.environ.get("KIMI_CODE_BASE_URL") or provider.get("base_url") or provider.get("baseUrl") or DEFAULT_API_BASE)
+  base = base.strip().rstrip("/")
+  parsed = urllib.parse.urlparse(base)
+  if parsed.hostname not in {"api.kimi.com", "api.kimi.ai"}:
+    base = DEFAULT_API_BASE
+  if base.endswith("/coding"):
+    base += "/v1"
+  elif "/coding/" not in base:
+    base = DEFAULT_API_BASE
+  return base.rstrip("/") + "/usages"
+
+
+def ratio(used: Any, limit: Any) -> float | None:
+  maximum = number(limit)
+  if maximum <= 0:
+    return None
+  return min(1.0, number(used) / maximum)
+
+
+def window_label(raw: dict[str, Any]) -> tuple[str, str]:
+  duration = number(raw.get("duration"))
+  unit = str(raw.get("timeUnit") or "").upper()
+  if unit == "TIME_UNIT_MINUTE" and duration >= 60 and duration % 60 == 0:
+    hours = duration // 60
+    return f"Session ({hours}-hour)", "Session"
+  if unit == "TIME_UNIT_HOUR":
+    return f"Session ({duration}-hour)", "Session"
+  if unit == "TIME_UNIT_WEEK":
+    return f"Weekly ({duration * 7}-day)", "Weekly"
+  if unit == "TIME_UNIT_DAY":
+    return f"Weekly ({duration}-day)", "Weekly"
+  name = str(raw.get("name") or "Limit").strip() or "Limit"
+  return name, name
+
+
+def money_cents(raw: Any) -> int:
+  if not isinstance(raw, dict):
+    return 0
+  return number(raw.get("priceInCents"))
+
+
+def parse_balance(payload: dict[str, Any]) -> dict[str, Any] | None:
+  wallet = payload.get("boosterWallet")
+  if not isinstance(wallet, dict):
+    return None
+  raw_balance = wallet.get("balance")
+  if not isinstance(raw_balance, dict) or raw_balance.get("type") != "BOOSTER":
+    return None
+  funded_fixed = number(raw_balance.get("amount"))
+  remaining_fixed = number(raw_balance.get("amountLeft"))
+  if funded_fixed <= 0:
+    return None
+  funded = funded_fixed / 100_000_000
+  remaining = remaining_fixed / 100_000_000
+  monthly_limit = wallet.get("monthlyChargeLimit")
+  monthly_used = wallet.get("monthlyUsed")
+  currency = "USD"
+  for value in (monthly_limit, monthly_used):
+    if isinstance(value, dict) and value.get("currency"):
+      currency = str(value["currency"])
+      break
+  return {
+    "remaining": remaining,
+    "funded": funded,
+    "spent": max(0.0, funded - remaining),
+    "currency": currency,
+    "estimated": False,
+  }
+
+
+def parse_limits(payload: dict[str, Any]) -> dict[str, Any]:
+  limits: list[dict[str, Any]] = []
+  summary = payload.get("usage")
+  if isinstance(summary, dict):
+    percent = ratio(summary.get("used"), summary.get("limit"))
+    if percent is not None:
+      limits.append({
+        "label": "Weekly (7-day)",
+        "title": "Weekly",
+        "percent": percent,
+        "resetsAt": str(summary.get("resetTime") or ""),
+      })
+
+  rows = payload.get("limits")
+  if isinstance(rows, list):
+    for row in rows:
+      if not isinstance(row, dict):
+        continue
+      detail = row.get("detail")
+      if not isinstance(detail, dict):
+        continue
+      percent = ratio(detail.get("used"), detail.get("limit"))
+      if percent is None:
+        continue
+      window = row.get("window") if isinstance(row.get("window"), dict) else {}
+      label, title = window_label(window)
+      limits.append({
+        "label": label,
+        "title": title,
+        "percent": percent,
+        "resetsAt": str(detail.get("resetTime") or ""),
+      })
+
+  return {"limits": limits, "balance": parse_balance(payload)}
+
+
+def cached_limits() -> dict[str, Any]:
+  cached = read_json(cache_root() / "kimi-limits.json")
+  return cached if isinstance(cached.get("limits"), list) else {}
+
+
+def collect_limits(root: Path, force: bool) -> dict[str, Any]:
+  cache = cache_root() / "kimi-limits.json"
+  recent = fresh_json(cache, 0 if force else PROBE_MIN_INTERVAL_SECONDS)
+  if recent and isinstance(recent.get("limits"), list):
+    return recent
+
+  config = load_toml(root / "config.toml")
+  provider = managed_provider(config)
+  token = credential_token(root, provider)
+  if not token:
+    return {
+      "limits": [],
+      "balance": None,
+      "usageStatusText": "Waiting for auth",
+      "authHelpText": AUTH_HELP,
+    }
+
+  request = urllib.request.Request(
+    usage_endpoint(provider),
+    headers={"Authorization": "Bearer " + token, "Accept": "application/json"},
+  )
+  try:
+    with urllib.request.urlopen(request, timeout=10) as response:
+      payload = json.loads(response.read().decode("utf-8", errors="replace"))
+    if not isinstance(payload, dict):
+      raise ValueError("unexpected usage response")
+  except urllib.error.HTTPError as error:
+    fallback = cached_limits()
+    if error.code in {401, 403}:
+      status = "Sign-in expired"
+      help_text = AUTH_HELP + (" Showing the last known limits." if fallback else "")
+    else:
+      status = "Kimi limits unavailable"
+      help_text = f"Kimi's usage endpoint returned status {error.code}. Local Kimi Code stats are still shown."
+    return {
+      "limits": fallback.get("limits", []),
+      "balance": fallback.get("balance"),
+      "usageStatusText": status,
+      "authHelpText": help_text,
+    }
+  except Exception:
+    fallback = cached_limits()
+    return {
+      "limits": fallback.get("limits", []),
+      "balance": fallback.get("balance"),
+      "usageStatusText": "Kimi limits unavailable",
+      "authHelpText": "Couldn't reach Kimi's usage endpoint. Local Kimi Code stats are still shown.",
+      "retryAdvised": True,
+    }
+
+  normalized = parse_limits(payload)
+  result = {
+    "limits": normalized["limits"],
+    "balance": normalized["balance"],
+    "usageStatusText": "",
+    "authHelpText": AUTH_HELP,
+  }
+  write_json(cache, result)
+  return result
+
+
+def main() -> None:
+  parser = argparse.ArgumentParser()
+  parser.add_argument("--force", action="store_true")
+  parser.add_argument("--limits-only", action="store_true")
+  args = parser.parse_args()
+
+  root = kimi_home()
+  max_age = 0 if args.force else (LIMITS_ONLY_REUSE_SECONDS if args.limits_only else SCAN_REUSE_SECONDS)
+  stats = cached_local_stats(root, max_age)
+  limits = collect_limits(root, args.force)
+  record: dict[str, Any] = {
+    "schemaVersion": 1,
+    "id": AGENT_ID,
+    "name": AGENT_NAME,
+    "updatedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
+    "ready": number(stats.get("totalPrompts")) > 0 or len(limits.get("limits") or []) > 0,
+    "hasLocalStats": number(stats.get("totalPrompts")) > 0,
+    "hasPromptStats": True,
+    "tierLabel": "Kimi Code",
+    "usageStatusText": str(limits.get("usageStatusText") or ""),
+    "authHelpText": str(limits.get("authHelpText") or AUTH_HELP),
+    "limits": limits.get("limits") or [],
+  }
+  if limits.get("balance"):
+    record["balance"] = limits["balance"]
+  if limits.get("retryAdvised"):
+    record["retryAdvised"] = True
+  record.update(stats)
+  print(json.dumps(record, separators=(",", ":")))
+
+
+if __name__ == "__main__":
+  main()
