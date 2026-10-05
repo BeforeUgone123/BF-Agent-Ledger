@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "beforeugone.agents",
-  "name": "Agent Ledger",
+  "name": "BF-Agent-Ledger",
   "version": "4.2.0",
   "author": "BeforeUgone",
   "license": "MIT",
@@ -15,7 +15,7 @@
     "barWidget": "Panel.qml"
   },
   "barWidget": {
-    "displayName": "Agent Ledger",
+    "displayName": "BF-Agent-Ledger",
     "description": "One bar icon and one page for every AI coding subscription: rate-limit meters, a GitHub-style activity calendar, plan capacity, estimated cost, and a range-filtered breakdown by agent, model, project, hour and session. Sections can be reordered or hidden, and the page switches between English and Chinese.",
     "category": "AI",
     "aliases": [

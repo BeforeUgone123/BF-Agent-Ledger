@@ -1,4 +1,4 @@
-# Agent Ledger
+# BF-Agent-Ledger
 
 一个状态栏图标、一个页面，汇总这台机器上所有 AI 编程 Agent 的用量：套餐还剩多少、
 一整年的活动、按官方标价折算的费用，以及 token 花在了哪里——按 Agent、模型、项目、
@@ -7,7 +7,7 @@
 这是一个 [Omarchy](https://omarchy.org) 状态栏组件，界面可在中文和英文之间切换
 （[English](README.md)）。
 
-![Agent Ledger](docs/preview-zh.png)
+![BF-Agent-Ledger](docs/preview-zh.png)
 
 ## 安装
 

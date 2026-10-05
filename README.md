@@ -1,4 +1,4 @@
-# Agent Ledger
+# BF-Agent-Ledger
 
 One bar icon and one page for every AI coding agent on the machine: what the
 plan still allows, a year of activity, what it would have cost at list prices,
@@ -7,7 +7,7 @@ and where the tokens went — by agent, model, project, hour and session.
 An [Omarchy](https://omarchy.org) bar widget. The page switches between English
 and Chinese ([中文说明](README.zh-CN.md)).
 
-![Agent Ledger](preview.png)
+![BF-Agent-Ledger](preview.png)
 
 ## Install
 

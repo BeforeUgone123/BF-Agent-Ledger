@@ -1,6 +1,6 @@
 # Notice
 
-Agent Ledger started as a copy of the Agents plugin that ships with
+BF-Agent-Ledger started as a copy of the Agents plugin that ships with
 [Omarchy](https://github.com/omacom/omarchy) (`shell/plugins/agents`), which is
 MIT licensed, copyright David Heinemeier Hansson. `Agent.qml`, the data
 loading and sync code in `Main.qml`, the limit rows and the overall shape of
