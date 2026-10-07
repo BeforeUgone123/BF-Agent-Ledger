@@ -77,7 +77,7 @@ refreshes, Esc closes. From a script:
 | Agent | Limits | Token detail read from |
 |---|---|---|
 | Claude Code | session and weekly windows, from Omarchy's collector | `~/.claude/projects/**/*.jsonl` |
-| Codex | session and weekly windows, from Omarchy's collector | `~/.codex/sessions/**/*.jsonl` |
+| Codex | session and weekly windows, from Omarchy's collector run through `bin/collect-codex` | `~/.codex/sessions/**/*.jsonl` |
 | OpenCode | — | `~/.local/share/opencode/opencode.db` |
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl` (and oh-my-pi's `~/.omp`) |
 | Hermes | — | `~/.hermes/state.db`, and each profile's |
@@ -120,8 +120,11 @@ Limits are the one thing that cannot be read locally. Omarchy's collectors ask
 each provider for them using the sign-in its CLI already has, exactly as the
 built-in Agents widget does. `bin/collect-kimi` does the same for Kimi:
 it reads the token `kimi login` stored under `~/.kimi-code/credentials/` and
-calls Kimi's usage endpoint, and nothing else. Without a sign-in an agent still
-shows its token detail, with a note that limits are unavailable.
+calls Kimi's usage endpoint, and nothing else. `bin/collect-codex` runs
+Omarchy's own Codex collector unchanged except for how it reads the Codex
+app-server's answers, so it asks for nothing the packaged one does not.
+Without a sign-in an agent still shows its token detail, with a note that
+limits are unavailable.
 
 Cross-device aggregation is off unless you set `syncMode`; when on, it writes a
 snapshot of usage totals into a folder you choose.
@@ -187,8 +190,10 @@ text. The page draws from two sources:
 - **Usage records**, one JSON file per agent in
   `~/.local/state/omarchy/agents/usage/`. `bin/usage-update` regenerates them:
   it runs Omarchy's `omarchy-agent-usage-update` and then the `collect-<agent>`
-  scripts beside it, for agents Omarchy has no collector for. Records are the
-  only source for limits, balances and sign-in state.
+  scripts beside it, for agents Omarchy has no collector for — and for Codex,
+  whose packaged collector intermittently loses the app-server's answer and
+  reports "account/read" as unavailable. Records are the only source for
+  limits, balances and sign-in state.
 - **The index**, built by `bin/usage-index` (Python, standard library only)
   from the raw session logs. It reads only what is new into `usage.db`, then
   writes `cube.json`: hourly totals in local time by agent, model, project and

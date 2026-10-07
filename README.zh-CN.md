@@ -67,7 +67,7 @@ omarchy plugin disable omarchy.agents
 | Agent | 限额 | token 明细读取自 |
 |---|---|---|
 | Claude Code | 会话和每周窗口，来自 Omarchy 的采集器 | `~/.claude/projects/**/*.jsonl` |
-| Codex | 会话和每周窗口，来自 Omarchy 的采集器 | `~/.codex/sessions/**/*.jsonl` |
+| Codex | 会话和每周窗口，来自 Omarchy 的采集器，经 `bin/collect-codex` 运行 | `~/.codex/sessions/**/*.jsonl` |
 | OpenCode | — | `~/.local/share/opencode/opencode.db` |
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl`（以及 oh-my-pi 的 `~/.omp`） |
 | Hermes | — | `~/.hermes/state.db`，以及各 profile 的 |
@@ -102,7 +102,9 @@ omarchy plugin disable omarchy.agents
 只有限额无法从本地读到。Omarchy 的采集器会用各家 CLI 已有的登录状态向服务商查询，
 和自带的 Agents 组件完全一样。`bin/collect-kimi` 对 Kimi 做同样的事：读取
 `kimi login` 存在 `~/.kimi-code/credentials/` 下的令牌，请求 Kimi 的用量接口，
-仅此而已。没有登录时，Agent 仍会显示 token 明细，并提示限额不可用。
+仅此而已。`bin/collect-codex` 原样运行 Omarchy 自带的 Codex 采集器，只改了读取
+Codex app-server 应答的方式（自带版本偶尔会丢掉应答，报 "account/read" 不可用），
+请求的内容和自带版本完全相同。没有登录时，Agent 仍会显示 token 明细，并提示限额不可用。
 
 跨设备汇总默认关闭，除非设置 `syncMode`；开启后会把用量总计的快照写入你指定的文件夹。
 
