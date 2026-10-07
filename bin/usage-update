@@ -2,13 +2,18 @@
 
 # Regenerates the usage records the panel reads. Omarchy's own updater runs the
 # collectors it ships (Claude Code, Codex, Fireworks, …); the collect-<agent>
-# scripts beside this file cover agents it has none for. Takes the updater's
-# arguments: [--force] [--limits-only] [--except <agent>] [agent...]
+# scripts beside this file cover agents it has none for, and stand in for the
+# ones named in `replaced`. Takes the updater's arguments:
+# [--force] [--limits-only] [--except <agent>] [agent...]
 
 here=$(cd "$(dirname "$0")" && pwd)
 USAGE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/omarchy/agents/usage"
 PACKAGED="${OMARCHY_PATH:-/usr/share/omarchy}/bin"
 mkdir -p "$USAGE_DIR"
+
+# Packaged collectors with a defect that the script beside this file works
+# around: collect-codex (see its header).
+declare -A replaced=([codex]=1)
 
 args=("$@")
 flags=()
@@ -51,6 +56,9 @@ collect() {
 
 pids=()
 if command -v omarchy-agent-usage-update >/dev/null; then
+  for agent in "${!replaced[@]}"; do
+    [[ -x $here/collect-$agent ]] && args=(--except "$agent" "${args[@]}")
+  done
   omarchy-agent-usage-update "${args[@]}" &
   pids+=($!)
 fi
@@ -59,7 +67,7 @@ for collector in "$here"/collect-*; do
   [[ -x $collector ]] || continue
   agent="${collector##*/collect-}"
   # Omarchy's own collector wins as soon as it ships one for this agent.
-  [[ -x $PACKAGED/omarchy-agent-usage-$agent ]] && continue
+  [[ -x $PACKAGED/omarchy-agent-usage-$agent && -z ${replaced[$agent]} ]] && continue
   wanted "$agent" || continue
   collect "$collector" "$agent" &
   pids+=($!)

@@ -1,0 +1,69 @@
+#!/usr/bin/python3
+"""Omarchy's Codex collector, with its app-server reads made reliable.
+
+The packaged collector waits for each RPC answer with select() on the pipe
+and then readline() on a buffered reader. The app-server sends an
+`account/updated` notification in the same instant as the answer to
+`account/read`; when both arrive in one read, the notification is returned,
+the answer is left in the reader's buffer where select() cannot see it, and
+the call times out — "Codex limits unavailable / account/read", every so
+often. This runs that collector unchanged except for the read, which keeps
+its own line buffer here.
+"""
+
+import json
+import os
+import select
+import sys
+import time
+from importlib.machinery import SourceFileLoader
+from importlib.util import module_from_spec, spec_from_loader
+from pathlib import Path
+
+PACKAGED = Path(os.environ.get("OMARCHY_PATH") or "/usr/share/omarchy") / "bin" / "omarchy-agent-usage-codex"
+
+
+def rpc_request(proc, request_id, method, params=None, timeout=8):
+  proc.stdin.write(json.dumps({"id": request_id, "method": method, "params": params or {}}) + "\n")
+  proc.stdin.flush()
+  fd = proc.stdout.fileno()
+  pending = getattr(proc, "unread", b"")
+  deadline = time.time() + timeout
+  while True:
+    # Every complete line already read is looked at before waiting for more.
+    while b"\n" in pending:
+      line, pending = pending.split(b"\n", 1)
+      proc.unread = pending
+      try:
+        message = json.loads(line)
+      except ValueError:
+        continue
+      if isinstance(message, dict) and message.get("id") == request_id:
+        return message
+    left = deadline - time.time()
+    if left <= 0:
+      break
+    ready, _, _ = select.select([fd], [], [], min(left, 0.25))
+    if not ready:
+      continue
+    chunk = os.read(fd, 65536)
+    if not chunk:
+      break  # the app-server went away
+    pending += chunk
+    proc.unread = pending
+  raise TimeoutError(method)
+
+
+def main():
+  sys.dont_write_bytecode = True
+  loader = SourceFileLoader("omarchy_agent_usage_codex", str(PACKAGED))
+  collector = module_from_spec(spec_from_loader(loader.name, loader))
+  loader.exec_module(collector)
+  # A collector that no longer has this function has changed its reads; run it as it is.
+  if hasattr(collector, "rpc_request"):
+    collector.rpc_request = rpc_request
+  collector.main()
+
+
+if __name__ == "__main__":
+  main()
