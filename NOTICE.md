@@ -26,10 +26,13 @@ MIT-licensed Omarchy plugins read the same files, with thanks to their authors:
 No code was copied from them.
 
 The marks in `assets/` identify the services whose usage is shown. They are
-trademarks of their owners — Anthropic, OpenAI, Cognition, Moonshot AI and
-Fireworks AI — and are not covered by this plugin's license. The Kimi mark is
-used under the license in `assets/kimi.LICENSE`; the Kigi mark is the Kigi
-project's own.
+trademarks of their owners — Anthropic, OpenAI, Cognition, Moonshot AI,
+Fireworks AI, Google, xAI, Anomaly, Earendil and Nous Research — and are not
+covered by this plugin's license. The Kimi mark is used under the license in
+`assets/kimi.LICENSE`; the Kigi mark is the Kigi project's own. Gemini's sparkle
+is the Simple Icons mark (CC0). The Grok path is the one published in lobe-icons
+(MIT). Hermes is that project's silhouette, kept as a single path so it still
+reads at bar size.
 
 Prices in `pricing.json` are copied from each provider's public price page,
 named in that file.
