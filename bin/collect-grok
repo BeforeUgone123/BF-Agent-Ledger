@@ -259,6 +259,7 @@ def parse_billing(payload: dict[str, Any], plan: str) -> dict[str, Any]:
 
   resets_at = window[1] if window else ""
   products = config.get("productUsage")
+  product_rows: list[dict[str, Any]] = []
   if isinstance(products, list):
     for row in products:
       if not isinstance(row, dict) or "usagePercent" not in row:
@@ -267,7 +268,10 @@ def parse_billing(payload: dict[str, Any], plan: str) -> dict[str, Any]:
       if share is None:
         continue
       name = product_name(row.get("product"))
-      limits.append(limit_row(name, meter_title(name), share, resets_at))
+      product_rows.append(limit_row(name, meter_title(name), share, resets_at))
+  # A single product is the pool itself. Two or more are a real split.
+  if len(product_rows) >= 2:
+    limits.extend(product_rows)
 
   balance = None
   prepaid = cents(config.get("prepaidBalance"))
@@ -437,6 +441,15 @@ def self_test() -> None:
   assert parsed["limits"][1]["percent"] == 0.49
   assert abs(parsed["limits"][3]["percent"] - 0.06) < 1e-9
   assert parsed["balance"]["remaining"] == 12.5
+
+  same = {
+    "config": {
+      "creditUsagePercent": 1,
+      "currentPeriod": {"type": "USAGE_PERIOD_TYPE_WEEKLY", "end": "2026-10-18T04:06:33.979847+00:00"},
+      "productUsage": [{"product": "GrokBuild", "usagePercent": 1}],
+    }
+  }
+  assert [row["title"] for row in parse_billing(same, "heavy 300$")["limits"]] == ["heavy 300$"]
 
   assert choose_plan("SuperGrok Heavy", "SuperGrokPro") == "grok · heavy 300$"
   assert meter_title("grok · heavy 300$") == "heavy 300$"
