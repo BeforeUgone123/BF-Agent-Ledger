@@ -350,14 +350,25 @@ Panel {
     return String(p ? p.providerName : "").split(" ")[0]
   }
 
-  // A merged page prefixes the agent. Skip that when the title already
-  // starts with the short name, or it reads "Grok · grok · heavy 300$".
-  function agentPrefix(count, p, title) {
-    if (!(count > 1)) return ""
+  // One agent name, once. "grok · heavy 300$" and "Grok Build" already
+  // start with it; prefixing again reads "Grok · grok · heavy…".
+  function limitLabel(count, p, title) {
     var name = shortName(p)
     var text = String(title || "")
-    if (name !== "" && text.toLowerCase().indexOf(name.toLowerCase()) === 0) return ""
-    return name + " · "
+    var rest = text
+    if (name !== "") {
+      var head = name.toLowerCase()
+      if (text.length >= name.length && text.toLowerCase().substring(0, head.length) === head) {
+        rest = text.substring(name.length)
+        while (rest.length > 0) {
+          var ch = rest.charAt(0)
+          if (ch !== " " && ch !== "·" && ch !== "." && ch !== "-" && ch !== "—") break
+          rest = rest.substring(1)
+        }
+      }
+    }
+    if (!(count > 1) || name === "") return text
+    return rest !== "" ? name + " · " + rest : name
   }
 
   function tokens(n) { return usage.formatTokenCount(Number(n || 0)) }
@@ -372,7 +383,7 @@ Panel {
       for (var w = 0; w < windows.length; w++) {
         var remaining = resetMsFor(windows[w])
         rows.push({
-          label: agentPrefix(list.length, p, windows[w].title) + windows[w].title,
+          label: limitLabel(list.length, p, windows[w].title),
           value: windows[w].percent,
           alarming: windows[w].percent >= 0.9,
           text: Math.round(windows[w].percent * 100) + "%" + (remaining > 0 ? " · " + formatDuration(remaining) : ""),
@@ -386,7 +397,7 @@ Panel {
         var credits = tr("Credits")
         var ratio = b.funded > 0 ? clamp(b.remaining / b.funded, 0, 1) : -1
         rows.push({
-          label: agentPrefix(list.length, p, credits) + credits,
+          label: limitLabel(list.length, p, credits),
           value: ratio,
           alarming: ratio >= 0 && ratio <= 0.1,
           text: tr("%1 left").arg(formatMoney(b.remaining, b.currency)),
@@ -719,7 +730,7 @@ Panel {
       if (!owner || !(w.share > 0) || !(used > 0)) continue
       var title = w.title !== "" ? tr(w.title) : windowTitle(w.label)
       rows.push({
-        label: agentPrefix(list.length, owner, title) + title,
+        label: limitLabel(list.length, owner, title),
         share: w.share,
         // The share arrives in whole percent, so the truth lies within half a
         // point either side and the estimate inherits that spread.
