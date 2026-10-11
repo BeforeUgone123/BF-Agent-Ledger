@@ -82,7 +82,7 @@ refreshes, Esc closes. From a script:
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl` (and oh-my-pi's `~/.omp`) |
 | Hermes | — | `~/.hermes/state.db`, and each profile's |
 | Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
-| Grok | — | `~/.grok/sessions/`: `usage.json`, or the turn log on older builds |
+| Grok | plan and weekly (or monthly) allowance, from `bin/collect-grok` | `~/.grok/sessions/`: `usage.json`, or the turn log on older builds |
 | Kigi | — | `~/.kigi/sessions/**/updates.jsonl` |
 | Devin | none: Devin has no usage API | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | windows and balance, from the collector in `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
@@ -120,7 +120,10 @@ Limits are the one thing that cannot be read locally. Omarchy's collectors ask
 each provider for them using the sign-in its CLI already has, exactly as the
 built-in Agents widget does. `bin/collect-kimi` does the same for Kimi:
 it reads the token `kimi login` stored under `~/.kimi-code/credentials/` and
-calls Kimi's usage endpoint, and nothing else. `bin/collect-codex` runs
+calls Kimi's usage endpoint, and nothing else. `bin/collect-grok` reads the
+sign-in `grok login` stored in `~/.grok/auth.json` and calls Grok's user and
+billing endpoints, the same ones `/usage` uses, and nothing else.
+`bin/collect-codex` runs
 Omarchy's own Codex collector unchanged except for how it reads the Codex
 app-server's answers, so it asks for nothing the packaged one does not.
 Without a sign-in an agent still shows its token detail, with a note that

@@ -335,6 +335,7 @@ Panel {
     if (String(p.usageStatusText || "") !== "") return statusText(p.usageStatusText)
     var tier = String(p.tierLabel || "")
     if (tier === "") return tr("Subscription")
+    if (tier.indexOf(" · ") >= 0) return tr(tier)
     return tr(tier.charAt(0).toUpperCase() + tier.slice(1))
   }
 
@@ -349,6 +350,16 @@ Panel {
     return String(p ? p.providerName : "").split(" ")[0]
   }
 
+  // A merged page prefixes the agent. Skip that when the title already
+  // starts with the short name, or it reads "Grok · grok · heavy 300$".
+  function agentPrefix(count, p, title) {
+    if (!(count > 1)) return ""
+    var name = shortName(p)
+    var text = String(title || "")
+    if (name !== "" && text.toLowerCase().indexOf(name.toLowerCase()) === 0) return ""
+    return name + " · "
+  }
+
   function tokens(n) { return usage.formatTokenCount(Number(n || 0)) }
 
   // Every agent's windows and balances as one flat list, each row naming its
@@ -357,12 +368,11 @@ Panel {
     var rows = []
     for (var i = 0; i < list.length; i++) {
       var p = list[i]
-      var prefix = list.length > 1 ? shortName(p) + " · " : ""
       var windows = limitWindows(p)
       for (var w = 0; w < windows.length; w++) {
         var remaining = resetMsFor(windows[w])
         rows.push({
-          label: prefix + windows[w].title,
+          label: agentPrefix(list.length, p, windows[w].title) + windows[w].title,
           value: windows[w].percent,
           alarming: windows[w].percent >= 0.9,
           text: Math.round(windows[w].percent * 100) + "%" + (remaining > 0 ? " · " + formatDuration(remaining) : ""),
@@ -373,9 +383,10 @@ Panel {
       if (b) {
         // The meter shows what is left, not what is used: a prepaid account
         // drains toward empty rather than filling toward a cap.
+        var credits = tr("Credits")
         var ratio = b.funded > 0 ? clamp(b.remaining / b.funded, 0, 1) : -1
         rows.push({
-          label: prefix + tr("Credits"),
+          label: agentPrefix(list.length, p, credits) + credits,
           value: ratio,
           alarming: ratio >= 0 && ratio <= 0.1,
           text: tr("%1 left").arg(formatMoney(b.remaining, b.currency)),
@@ -706,8 +717,9 @@ Panel {
         if (list[k].providerId === w.agent) owner = list[k]
       var used = w.input + w.output + w.cacheWrite + (cache ? w.cacheRead : 0)
       if (!owner || !(w.share > 0) || !(used > 0)) continue
+      var title = w.title !== "" ? tr(w.title) : windowTitle(w.label)
       rows.push({
-        label: (list.length > 1 ? shortName(owner) + " · " : "") + (w.title !== "" ? tr(w.title) : windowTitle(w.label)),
+        label: agentPrefix(list.length, owner, title) + title,
         share: w.share,
         // The share arrives in whole percent, so the truth lies within half a
         // point either side and the estimate inherits that spread.

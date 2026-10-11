@@ -74,6 +74,7 @@ var zh = {
   "Limit": "限额",
   "Resets in %1": "%1后重置",
   "Credits": "余额",
+  "On-demand": "按量",
   "%1 left": "剩余 %1",
   "%1 spent of %2 funded": "已用 %1 / 充值 %2",
   "estimated": "估算",

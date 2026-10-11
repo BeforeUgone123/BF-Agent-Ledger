@@ -810,6 +810,39 @@ def scan(index: Index) -> int:
 # its record is derived from the index instead.
 
 RECORD_SOURCE = "beforeugone.agents/index"
+# collect-<agent> prints a record with this source. The index still refreshes
+# the local totals, then puts the plan and limits back from that collector's
+# cache so the two writers do not take turns erasing each other.
+COLLECTOR_SOURCE = {"grok": "beforeugone.agents/grok"}
+
+
+def limits_cache(agent: str) -> dict:
+  cache_home = Path(os.environ.get("XDG_CACHE_HOME") or HOME / ".cache")
+  try:
+    parsed = json.loads((cache_home / "omarchy" / "agent-usage" / f"{agent}-limits.json").read_text())
+  except (OSError, ValueError):
+    return {}
+  return parsed if isinstance(parsed, dict) else {}
+
+
+def apply_billing(record: dict, agent: str) -> None:
+  """Overlay the plan, limits and balance collect-<agent> last fetched."""
+  cached = limits_cache(agent)
+  if not cached:
+    return
+  if isinstance(cached.get("limits"), list):
+    record["limits"] = cached["limits"]
+  tier = cached.get("tierLabel")
+  if isinstance(tier, str) and tier:
+    record["tierLabel"] = tier
+  if "usageStatusText" in cached:
+    record["usageStatusText"] = str(cached.get("usageStatusText") or "")
+  if cached.get("authHelpText"):
+    record["authHelpText"] = str(cached["authHelpText"])
+  if cached.get("balance"):
+    record["balance"] = cached["balance"]
+  if cached.get("retryAdvised"):
+    record["retryAdvised"] = True
 
 
 def write_records(index: Index) -> None:
@@ -825,8 +858,10 @@ def write_records(index: Index) -> None:
       old = json.loads(path.read_text())
     except (OSError, ValueError):
       old = None
-    # A record someone else wrote is theirs: `source` marks the ones to replace.
-    if isinstance(old, dict) and old.get("source") != RECORD_SOURCE:
+    # A record someone else wrote is theirs. A collector this plugin ships is
+    # not someone else: its plan and limits are merged back in below.
+    owned = COLLECTOR_SOURCE.get(adapter.id)
+    if isinstance(old, dict) and old.get("source") not in (None, RECORD_SOURCE, owned):
       continue
 
     days = {day: (sessions, tokens) for day, sessions, tokens in index.db.execute(
@@ -865,6 +900,8 @@ def write_records(index: Index) -> None:
       "modelUsage": models, "limits": [], "tierLabel": info.get("tierLabel", "Local logs"),
       "usageStatusText": "", "authHelpText": "",
     }
+    if owned:
+      apply_billing(record, adapter.id)
     if isinstance(old, dict) and {k: v for k, v in old.items() if k != "updatedAt"} == record:
       continue  # nothing new: leave the file alone so the panel does not reload
     record["updatedAt"] = datetime.now().astimezone().isoformat()

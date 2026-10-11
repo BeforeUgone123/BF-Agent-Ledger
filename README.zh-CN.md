@@ -72,7 +72,7 @@ omarchy plugin disable omarchy.agents
 | Pi | — | `~/.pi/agent/sessions/**/*.jsonl`（以及 oh-my-pi 的 `~/.omp`） |
 | Hermes | — | `~/.hermes/state.db`，以及各 profile 的 |
 | Gemini CLI | — | `~/.gemini/tmp/*/chats/` |
-| Grok | — | `~/.grok/sessions/`：`usage.json`，旧版本则读取轮次日志 |
+| Grok | 套餐和每周（或每月）额度，来自 `bin/collect-grok` | `~/.grok/sessions/`：`usage.json`，旧版本则读取轮次日志 |
 | Kigi | — | `~/.kigi/sessions/**/updates.jsonl` |
 | Devin | 无：Devin 没有用量接口 | `~/.local/share/devin/cli/transcripts/*.json` |
 | Kimi Code | 窗口和余额，来自 `bin/collect-kimi` | `~/.kimi-code/sessions/**/wire.jsonl` |
@@ -102,7 +102,9 @@ omarchy plugin disable omarchy.agents
 只有限额无法从本地读到。Omarchy 的采集器会用各家 CLI 已有的登录状态向服务商查询，
 和自带的 Agents 组件完全一样。`bin/collect-kimi` 对 Kimi 做同样的事：读取
 `kimi login` 存在 `~/.kimi-code/credentials/` 下的令牌，请求 Kimi 的用量接口，
-仅此而已。`bin/collect-codex` 原样运行 Omarchy 自带的 Codex 采集器，只改了读取
+仅此而已。`bin/collect-grok` 读取 `grok login` 存在 `~/.grok/auth.json` 里的登录状态，
+请求 Grok 的用户和账单接口，也就是 `/usage` 用的那两个，除此之外不请求别的。
+`bin/collect-codex` 原样运行 Omarchy 自带的 Codex 采集器，只改了读取
 Codex app-server 应答的方式（自带版本偶尔会丢掉应答，报 "account/read" 不可用），
 请求的内容和自带版本完全相同。没有登录时，Agent 仍会显示 token 明细，并提示限额不可用。
 
